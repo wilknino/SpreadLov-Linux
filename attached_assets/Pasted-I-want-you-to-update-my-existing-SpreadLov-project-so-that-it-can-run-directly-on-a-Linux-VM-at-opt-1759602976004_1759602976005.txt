@@ -1,0 +1,73 @@
+I want you to update my existing SpreadLov project so that it can run directly on a Linux VM at /opt/spreadlov as spreadlov.com. Currently, the project was created using Replit AI and has the following structure:
+
+Project uses Node.js (ES Modules), Vite, React, TailwindCSS, TypeScript.
+
+The project has a server/index.ts for backend.
+
+The frontend is built with Vite + React.
+
+PostgreSQL is required for the database.
+
+Requirements for the updated project:
+
+Linux VM Ready: All paths should assume the project lives at /opt/spreadlov.
+
+Backend Adjustments: Update server/index.ts and any configuration to:
+
+Use ES Modules properly (__dirname issues fixed).
+
+Use .env for database credentials and port configuration.
+
+Default to port 5000 for Node.js server.
+
+Catch EADDRINUSE errors or give clear logs if the port is in use.
+
+Frontend Adjustments:
+
+Vite build output goes to /opt/spreadlov/dist/public.
+
+Path aliases properly resolved.
+
+PostgreSQL Integration: Use the following credentials:
+
+Database: spreadlovdb
+
+Username: psql
+
+Password: T=[ab!Bu5H{gV.ZN
+
+Host: localhost
+
+Port: 5432
+
+Provide instructions in requirement.txt to install PostgreSQL if needed.
+
+Nginx + SSL Ready: Assume Nginx will serve the app with reverse proxy at spreadlov.com and SSL via Let’s Encrypt.
+
+Dependencies Management:
+
+Generate a requirement.txt file listing all system requirements (Node.js, npm, PostgreSQL, build tools, nginx, certbot, etc.) and all NPM packages from package.json.
+
+Environment Configuration:
+
+Provide .env file template for database credentials and server port.
+
+Build & Run Instructions:
+
+Include instructions in requirement.txt on how to build (npm install && npm run build) and run (node dist/index.js) the project on Linux VM.
+
+Clean & Direct Deployment:
+
+Make sure that after Replit updates the project, I can upload all files to /opt/spreadlov, run npm install, npm run build, and node dist/index.js and it will work without additional code changes.
+
+Output Expected From You (Replit AI):
+
+Updated project files ready for Linux VM deployment.
+
+requirement.txt with full prerequisites.
+
+.env template.
+
+Clear instructions on running the project.
+
+Make sure all ES Module issues (__dirname) are fixed, PostCSS/TailwindCSS builds properly, and the project works with Node.js v20 and PostgreSQL on Linux.
