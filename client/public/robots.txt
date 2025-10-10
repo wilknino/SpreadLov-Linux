@@ -1,0 +1,20 @@
+# SpreadLov - Robots.txt
+# Allow search engines to crawl public pages
+
+User-agent: *
+Allow: /
+Allow: /auth
+
+# Disallow authenticated/private pages
+Disallow: /discover
+Disallow: /messages
+Disallow: /notifications
+Disallow: /profile
+Disallow: /chat
+Disallow: /verify-email
+
+# Disallow API endpoints
+Disallow: /api/
+
+# Sitemap location
+Sitemap: https://spreadlov.com/sitemap.xml
