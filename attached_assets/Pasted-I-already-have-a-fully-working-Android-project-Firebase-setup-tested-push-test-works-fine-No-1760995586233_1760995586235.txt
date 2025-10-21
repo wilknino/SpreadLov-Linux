@@ -1,0 +1,34 @@
+I already have a fully working Android project (Firebase setup tested — push test works fine).  
+Now I want to integrate **real-time push notifications** from my website’s “Notification” system into the Android app.
+
+Here’s what’s already working:
+- My Firebase configuration in the Android app is correct (tested successfully with test push message).
+- My website’s notification page already has 3 types of notifications:
+  ✅ 1. Profile View Notification — “Someone viewed your profile”
+  ✅ 2. Profile Like Notification — “Someone liked your profile”
+  ✅ 3. Message Notification — “Someone sent you a message”
+
+What I want:
+- When the Android app is **open (foreground)** → no need for push notifications (the website already shows them live).
+- When the Android app is **in background or closed** → send **Firebase Cloud Messaging (FCM) push notification** to the user for any new notification (view/like/message).
+
+Requirements:
+1. Don’t break any existing functionality on website or app.
+2. You can add minimal backend code to trigger Firebase push when new notification is created for a user (in the same logic that creates those 3 notification types).
+3. Make sure the push includes:
+   - `title`: Notification type (e.g., "New Like", "New Message", "Profile View")
+   - `body`: Short message (e.g., “Someone liked your profile”)
+   - Optional `click_action`: open Notification page in WebView when tapped
+4. Save all modified or newly created files in a list called **makechange1.txt**, clearly showing each file path and line numbers or function names changed.
+5. Don’t modify unrelated files or break my existing Firebase config.
+
+Tech details:
+- Firebase FCM already initialized in Android project.
+- Web backend is running on Ubuntu (Node.js with Express).
+- Notifications page and logic already exist — you only need to add FCM trigger in backend when new notifications are created.
+
+Expected result:
+✔ When someone views/likes/sends a message to a user, and that user’s Android app is in background or closed, they receive a push notification via FCM with the correct title and body.  
+✔ When the app is open, only the website notification shows (no push).
+
+Please confirm you’ll safely integrate this and list all your changes in **makechange1.txt**.
