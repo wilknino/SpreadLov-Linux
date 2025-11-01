@@ -1,0 +1,1 @@
+DROP TABLE "chat_consents" CASCADE;
