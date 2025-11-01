@@ -1,6 +1,6 @@
 import { useState, useRef } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Camera } from "lucide-react";
+import { Camera, MapPin, Calendar } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -28,6 +28,13 @@ export default function ProfileModal({ isOpen, onClose, user }: ProfileModalProp
   const queryClient = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
   
+  // Parse dateOfBirth if exists
+  const parsedDateOfBirth = user.dateOfBirth ? user.dateOfBirth.split('-') : ['', '', ''];
+  const initialBirthYear = parsedDateOfBirth[0] || '';
+  // Remove leading zeros from month and day to match select option values
+  const initialBirthMonth = parsedDateOfBirth[1] ? String(parseInt(parsedDateOfBirth[1])) : '';
+  const initialBirthDay = parsedDateOfBirth[2] ? String(parseInt(parsedDateOfBirth[2])) : '';
+
   const [formData, setFormData] = useState({
     firstName: user.firstName,
     lastName: user.lastName,
@@ -36,12 +43,49 @@ export default function ProfileModal({ isOpen, onClose, user }: ProfileModalProp
     gender: user.gender,
     bio: user.bio || "",
     location: user.location || "",
+    birthMonth: initialBirthMonth,
+    birthDay: initialBirthDay,
+    birthYear: initialBirthYear,
   });
 
   const profileUpdateMutation = useMutation({
     mutationFn: async (data: typeof formData) => {
-      const { username, email, gender, ...editableData } = data;
-      const res = await apiRequest("PATCH", "/api/profile", editableData);
+      const { username, email, birthMonth, birthDay, birthYear, ...editableData } = data;
+      
+      // Calculate age from date of birth if all fields are provided
+      let age = undefined;
+      let dateOfBirth = undefined;
+      if (birthMonth && birthDay && birthYear) {
+        const dateString = `${birthYear}-${birthMonth.padStart(2, '0')}-${birthDay.padStart(2, '0')}`;
+        const birthDate = new Date(dateString);
+        
+        // Validate that the date is valid (e.g., not February 31)
+        const isValidDate = !isNaN(birthDate.getTime()) && 
+                          birthDate.getFullYear() === parseInt(birthYear) &&
+                          (birthDate.getMonth() + 1) === parseInt(birthMonth) &&
+                          birthDate.getDate() === parseInt(birthDay);
+        
+        if (!isValidDate) {
+          throw new Error("Invalid date selected. Please check your date of birth.");
+        }
+        
+        dateOfBirth = dateString;
+        const today = new Date();
+        age = today.getFullYear() - birthDate.getFullYear();
+        const monthDiff = today.getMonth() - birthDate.getMonth();
+        
+        if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
+          age--;
+        }
+      }
+      
+      const updateData = {
+        ...editableData,
+        ...(age !== undefined && { age }),
+        ...(dateOfBirth && { dateOfBirth }),
+      };
+      
+      const res = await apiRequest("PATCH", "/api/profile", updateData);
       return res.json();
     },
     onSuccess: (updatedUser) => {
@@ -216,13 +260,16 @@ export default function ProfileModal({ isOpen, onClose, user }: ProfileModalProp
               </p>
             </div>
 
-            {/* Gender (Disabled) */}
+            {/* Gender (Editable) */}
             <div className="space-y-2">
               <Label htmlFor="gender" className="text-sm font-medium">Gender</Label>
-              <Select value={formData.gender} disabled>
+              <Select 
+                value={formData.gender} 
+                onValueChange={(value) => setFormData(prev => ({ ...prev, gender: value }))}
+              >
                 <SelectTrigger 
                   data-testid="select-gender" 
-                  className="bg-secondary/50 rounded-xl border-2 cursor-not-allowed"
+                  className="rounded-xl border-2 focus:border-primary transition-all"
                 >
                   <SelectValue placeholder="Select gender" />
                 </SelectTrigger>
@@ -230,27 +277,153 @@ export default function ProfileModal({ isOpen, onClose, user }: ProfileModalProp
                   <SelectItem value="male">Male</SelectItem>
                   <SelectItem value="female">Female</SelectItem>
                   <SelectItem value="other">Other</SelectItem>
-                  <SelectItem value="prefer_not_to_say">Prefer not to say</SelectItem>
                 </SelectContent>
               </Select>
-              <p className="text-xs text-muted-foreground">
-                Gender cannot be changed
-              </p>
             </div>
 
-            {/* Location */}
+            {/* Country/Region (Dropdown) */}
             <div className="space-y-2">
-              <Label htmlFor="location" className="text-sm font-medium">Location (Optional)</Label>
-              <Input
-                id="location"
-                type="text"
-                placeholder="Australia"
-                value={formData.location}
-                onChange={(e) => setFormData(prev => ({ ...prev, location: e.target.value }))}
-                className="rounded-xl border-2 focus:border-primary transition-all"
-                data-testid="input-location"
-                maxLength={100}
-              />
+              <Label htmlFor="location" className="text-sm font-medium">Country/Region</Label>
+              <div className="relative">
+                <MapPin className="absolute left-3 top-1/2 transform -translate-y-1/2 h-5 w-5 text-muted-foreground z-10" />
+                <Select 
+                  value={formData.location}
+                  onValueChange={(value) => setFormData(prev => ({ ...prev, location: value }))}
+                >
+                  <SelectTrigger 
+                    data-testid="select-location" 
+                    className="rounded-xl border-2 pl-10 focus:border-primary transition-all"
+                  >
+                    <SelectValue placeholder="Select country/region" />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-[200px]">
+                    <SelectItem value="Afghanistan">Afghanistan</SelectItem>
+                    <SelectItem value="Albania">Albania</SelectItem>
+                    <SelectItem value="Algeria">Algeria</SelectItem>
+                    <SelectItem value="Argentina">Argentina</SelectItem>
+                    <SelectItem value="Australia">Australia</SelectItem>
+                    <SelectItem value="Austria">Austria</SelectItem>
+                    <SelectItem value="Bangladesh">Bangladesh</SelectItem>
+                    <SelectItem value="Belgium">Belgium</SelectItem>
+                    <SelectItem value="Brazil">Brazil</SelectItem>
+                    <SelectItem value="Canada">Canada</SelectItem>
+                    <SelectItem value="Chile">Chile</SelectItem>
+                    <SelectItem value="China">China</SelectItem>
+                    <SelectItem value="Colombia">Colombia</SelectItem>
+                    <SelectItem value="Denmark">Denmark</SelectItem>
+                    <SelectItem value="Egypt">Egypt</SelectItem>
+                    <SelectItem value="Finland">Finland</SelectItem>
+                    <SelectItem value="France">France</SelectItem>
+                    <SelectItem value="Germany">Germany</SelectItem>
+                    <SelectItem value="Greece">Greece</SelectItem>
+                    <SelectItem value="India">India</SelectItem>
+                    <SelectItem value="Indonesia">Indonesia</SelectItem>
+                    <SelectItem value="Iran">Iran</SelectItem>
+                    <SelectItem value="Iraq">Iraq</SelectItem>
+                    <SelectItem value="Ireland">Ireland</SelectItem>
+                    <SelectItem value="Israel">Israel</SelectItem>
+                    <SelectItem value="Italy">Italy</SelectItem>
+                    <SelectItem value="Japan">Japan</SelectItem>
+                    <SelectItem value="Jordan">Jordan</SelectItem>
+                    <SelectItem value="Kenya">Kenya</SelectItem>
+                    <SelectItem value="Malaysia">Malaysia</SelectItem>
+                    <SelectItem value="Mexico">Mexico</SelectItem>
+                    <SelectItem value="Morocco">Morocco</SelectItem>
+                    <SelectItem value="Netherlands">Netherlands</SelectItem>
+                    <SelectItem value="New Zealand">New Zealand</SelectItem>
+                    <SelectItem value="Nigeria">Nigeria</SelectItem>
+                    <SelectItem value="Norway">Norway</SelectItem>
+                    <SelectItem value="Pakistan">Pakistan</SelectItem>
+                    <SelectItem value="Peru">Peru</SelectItem>
+                    <SelectItem value="Philippines">Philippines</SelectItem>
+                    <SelectItem value="Poland">Poland</SelectItem>
+                    <SelectItem value="Portugal">Portugal</SelectItem>
+                    <SelectItem value="Russia">Russia</SelectItem>
+                    <SelectItem value="Saudi Arabia">Saudi Arabia</SelectItem>
+                    <SelectItem value="Singapore">Singapore</SelectItem>
+                    <SelectItem value="South Africa">South Africa</SelectItem>
+                    <SelectItem value="South Korea">South Korea</SelectItem>
+                    <SelectItem value="Spain">Spain</SelectItem>
+                    <SelectItem value="Sweden">Sweden</SelectItem>
+                    <SelectItem value="Switzerland">Switzerland</SelectItem>
+                    <SelectItem value="Thailand">Thailand</SelectItem>
+                    <SelectItem value="Turkey">Turkey</SelectItem>
+                    <SelectItem value="UAE">United Arab Emirates</SelectItem>
+                    <SelectItem value="UK">United Kingdom</SelectItem>
+                    <SelectItem value="USA">United States</SelectItem>
+                    <SelectItem value="Vietnam">Vietnam</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            {/* Date of Birth */}
+            <div className="space-y-2">
+              <Label className="text-sm font-medium">Date of Birth</Label>
+              <div className="grid grid-cols-3 gap-3">
+                <div className="relative">
+                  <Calendar className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground z-10" />
+                  <Select 
+                    value={formData.birthMonth}
+                    onValueChange={(value) => setFormData(prev => ({ ...prev, birthMonth: value }))}
+                  >
+                    <SelectTrigger 
+                      data-testid="select-birth-month" 
+                      className="rounded-xl border-2 pl-9 focus:border-primary transition-all"
+                    >
+                      <SelectValue placeholder="Month" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="1">January</SelectItem>
+                      <SelectItem value="2">February</SelectItem>
+                      <SelectItem value="3">March</SelectItem>
+                      <SelectItem value="4">April</SelectItem>
+                      <SelectItem value="5">May</SelectItem>
+                      <SelectItem value="6">June</SelectItem>
+                      <SelectItem value="7">July</SelectItem>
+                      <SelectItem value="8">August</SelectItem>
+                      <SelectItem value="9">September</SelectItem>
+                      <SelectItem value="10">October</SelectItem>
+                      <SelectItem value="11">November</SelectItem>
+                      <SelectItem value="12">December</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                
+                <Select 
+                  value={formData.birthDay}
+                  onValueChange={(value) => setFormData(prev => ({ ...prev, birthDay: value }))}
+                >
+                  <SelectTrigger 
+                    data-testid="select-birth-day" 
+                    className="rounded-xl border-2 focus:border-primary transition-all"
+                  >
+                    <SelectValue placeholder="Day" />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-[200px]">
+                    {Array.from({ length: 31 }, (_, i) => i + 1).map((day) => (
+                      <SelectItem key={day} value={String(day)}>{day}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                
+                <Select 
+                  value={formData.birthYear}
+                  onValueChange={(value) => setFormData(prev => ({ ...prev, birthYear: value }))}
+                >
+                  <SelectTrigger 
+                    data-testid="select-birth-year" 
+                    className="rounded-xl border-2 focus:border-primary transition-all"
+                  >
+                    <SelectValue placeholder="Year" />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-[200px]">
+                    {Array.from({ length: new Date().getFullYear() - 1924 }, (_, i) => new Date().getFullYear() - 18 - i).map((year) => (
+                      <SelectItem key={year} value={String(year)}>{year}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
             </div>
 
             {/* Bio */}
