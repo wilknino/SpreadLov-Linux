@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useAuth } from "@/hooks/use-auth";
+import { useLocation } from "wouter";
 import Sidebar from "@/components/chat/sidebar";
 import ChatWindow from "@/components/chat/chat-window";
 import UserInfoPanel from "@/components/chat/user-info-panel";
@@ -8,9 +9,16 @@ import { User } from "@shared/schema";
 
 export default function HomePage() {
   const { user } = useAuth();
+  const [, setLocation] = useLocation();
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [showUserInfo, setShowUserInfo] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+
+  useEffect(() => {
+    if (user) {
+      setLocation("/discover");
+    }
+  }, [user, setLocation]);
 
   if (!user) return null;
 

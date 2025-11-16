@@ -1,15 +1,18 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { MultiplePhotoUpload } from "@/components/ui/multiple-photo-upload";
 import { Input } from "@/components/ui/input";
 import { toast } from "@/hooks/use-toast";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import ProfileModal from "@/components/chat/profile-modal";
+import { SupportFeedbackDialog } from "@/components/support-feedback-dialog";
+import { useLocation } from "wouter";
 import { 
   Edit, 
   Camera, 
@@ -20,15 +23,25 @@ import {
   Settings,
   Heart,
   MessageCircle,
+  MessageSquare,
   Mail,
   AtSign,
-  UserCheck
+  UserCheck,
+  Loader2,
+  Cake,
+  Trash2
 } from "lucide-react";
 
 export default function ProfilePage() {
   const { user, logoutMutation } = useAuth();
+  const [, navigate] = useLocation();
   const [showEditModal, setShowEditModal] = useState(false);
+  const [showSupportDialog, setShowSupportDialog] = useState(false);
+  const [showLikesSheet, setShowLikesSheet] = useState(false);
   const [selectedPhotoIndex, setSelectedPhotoIndex] = useState<number | null>(null);
+  const [likesCount, setLikesCount] = useState(0);
+  const [likesList, setLikesList] = useState<any[]>([]);
+  const [loadingLikes, setLoadingLikes] = useState(false);
   const queryClient = useQueryClient();
 
   const profilePhotoUploadMutation = useMutation({
@@ -61,6 +74,40 @@ export default function ProfilePage() {
       });
     },
   });
+
+  const [, setLocation] = useLocation();
+
+  const fetchLikesCount = async () => {
+    try {
+      const response = await fetch('/api/likes/count');
+      if (response.ok) {
+        const data = await response.json();
+        setLikesCount(data.count);
+      }
+    } catch (error) {
+      console.error('Error fetching likes count:', error);
+    }
+  };
+
+  const fetchLikesList = async () => {
+    setLoadingLikes(true);
+    try {
+      const response = await fetch('/api/likes/received');
+      if (response.ok) {
+        const data = await response.json();
+        setLikesList(data);
+      }
+    } catch (error) {
+      console.error('Error fetching likes list:', error);
+    } finally {
+      setLoadingLikes(false);
+    }
+  };
+
+  const handleLikesClick = () => {
+    setShowLikesSheet(true);
+    fetchLikesList();
+  };
 
   if (!user) return null;
 
@@ -97,16 +144,26 @@ export default function ProfilePage() {
 
   const userPhotos = user.photos && Array.isArray(user.photos) ? user.photos : [];
 
+  // Fetch likes count on mount
+  useEffect(() => {
+    fetchLikesCount();
+  }, []);
+
   return (
-    <div className="min-h-screen bg-background pb-20 md:pb-6">
+    <div className="flex flex-col h-screen bg-background">
       {/* Header */}
-      <div className="sticky top-0 z-40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 border-b">
+      <div className="flex-none z-40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 border-b">
         <div className="container max-w-5xl mx-auto flex items-center justify-between p-4">
-          <div>
-            <h1 className="text-xl md:text-2xl font-bold bg-gradient-to-r from-primary to-primary/70 bg-clip-text text-transparent">
-              Profile
-            </h1>
-            <p className="text-xs md:text-sm text-muted-foreground">Manage your account</p>
+          <div className="flex items-center gap-2 sm:gap-3">
+            <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center shadow-lg">
+              <UserIcon className="h-5 w-5 sm:h-6 sm:w-6 text-white" />
+            </div>
+            <div>
+              <h1 className="text-xl md:text-2xl font-bold bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 bg-clip-text text-transparent">
+                Profile
+              </h1>
+              <p className="text-xs md:text-sm text-muted-foreground">Manage your account</p>
+            </div>
           </div>
 
           <Sheet>
@@ -131,6 +188,24 @@ export default function ProfilePage() {
                 </Button>
                 
                 <Button 
+                  variant="outline" 
+                  className="w-full justify-start rounded-lg transition-all hover:bg-blue-500/10"
+                  onClick={() => setShowSupportDialog(true)}
+                >
+                  <MessageSquare className="h-4 w-4 mr-2" />
+                  Support & Feedback
+                </Button>
+                
+                <Button 
+                  variant="outline" 
+                  className="w-full justify-start rounded-lg transition-all hover:bg-red-500/10 text-red-600 hover:text-red-700"
+                  onClick={() => navigate("/delete-account")}
+                >
+                  <Trash2 className="h-4 w-4 mr-2" />
+                  Delete Account
+                </Button>
+                
+                <Button 
                   variant="destructive" 
                   className="w-full justify-start rounded-lg"
                   onClick={handleLogout}
@@ -144,8 +219,10 @@ export default function ProfilePage() {
         </div>
       </div>
 
-      <div className="container max-w-5xl mx-auto p-4 space-y-6">
-        {/* Profile Header Card */}
+      {/* Scrollable Content */}
+      <ScrollArea className="flex-1 pb-20 md:pb-6">
+        <div className="container max-w-5xl mx-auto p-4 space-y-6">
+          {/* Profile Header Card */}
         <Card className="overflow-hidden rounded-2xl shadow-lg border-0 bg-gradient-to-br from-card to-card/80">
           <div className="relative">
             {/* Cover Background */}
@@ -205,12 +282,12 @@ export default function ProfilePage() {
                         {user.gender}
                       </Badge>
                       <div className="flex items-center gap-1 text-muted-foreground">
-                        <Calendar className="h-3 w-3 md:h-4 md:w-4" />
+                        <Cake className="h-3 w-3 md:h-4 md:w-4 text-blue-500" />
                         <span>{user.age} years old</span>
                       </div>
                       {user.location && (
                         <div className="flex items-center gap-1 text-muted-foreground">
-                          <MapPin className="h-3 w-3 md:h-4 md:w-4" />
+                          <MapPin className="h-3 w-3 md:h-4 md:w-4 text-green-500" />
                           <span>{user.location}</span>
                         </div>
                       )}
@@ -276,12 +353,15 @@ export default function ProfilePage() {
 
         {/* Stats Cards */}
         <div className="grid grid-cols-3 gap-3 md:gap-4">
-          <Card className="rounded-xl shadow-md border-0 bg-gradient-to-br from-red-500/10 to-red-500/5 hover:shadow-lg transition-all duration-300 hover:scale-105">
+          <Card 
+            className="rounded-xl shadow-md border-0 bg-gradient-to-br from-red-500/10 to-red-500/5 hover:shadow-lg transition-all duration-300 hover:scale-105 cursor-pointer"
+            onClick={handleLikesClick}
+          >
             <CardContent className="p-4 md:p-6 text-center">
               <div className="bg-red-500/10 w-10 h-10 md:w-12 md:h-12 rounded-full flex items-center justify-center mx-auto mb-2 md:mb-3">
                 <Heart className="h-5 w-5 md:h-6 md:w-6 text-red-500" />
               </div>
-              <div className="text-xl md:text-2xl font-bold">0</div>
+              <div className="text-xl md:text-2xl font-bold">{likesCount}</div>
               <div className="text-xs md:text-sm text-muted-foreground mt-1">Likes</div>
             </CardContent>
           </Card>
@@ -426,7 +506,8 @@ export default function ProfilePage() {
             </div>
           </div>
         </Card>
-      </div>
+        </div>
+      </ScrollArea>
 
       {/* Profile Edit Modal */}
       <ProfileModal
@@ -434,6 +515,79 @@ export default function ProfilePage() {
         onClose={() => setShowEditModal(false)}
         user={user}
       />
+
+      {/* Support & Feedback Dialog */}
+      <SupportFeedbackDialog
+        open={showSupportDialog}
+        onOpenChange={setShowSupportDialog}
+      />
+
+      {/* Likes Sheet */}
+      <Sheet open={showLikesSheet} onOpenChange={setShowLikesSheet}>
+        <SheetContent side="right" className="w-full sm:w-96">
+          <SheetHeader>
+            <SheetTitle className="flex items-center gap-2">
+              <Heart className="h-5 w-5 text-red-500" />
+              People Who Liked You ({likesCount})
+            </SheetTitle>
+          </SheetHeader>
+
+          <div className="mt-6">
+            {loadingLikes ? (
+              <div className="flex items-center justify-center py-12">
+                <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+              </div>
+            ) : likesList.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-12 text-center">
+                <div className="bg-red-500/10 p-4 rounded-full mb-4">
+                  <Heart className="h-8 w-8 text-red-500" />
+                </div>
+                <p className="text-lg font-semibold mb-1">No likes yet</p>
+                <p className="text-sm text-muted-foreground">
+                  When someone likes your profile, they'll appear here
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {likesList.map((like) => (
+                  <div
+                    key={like.id}
+                    className="flex items-center gap-3 p-3 rounded-xl bg-secondary/30 hover:bg-secondary/50 transition-all duration-200 cursor-pointer"
+                    onClick={() => {
+                      setShowLikesSheet(false);
+                      setLocation(`/user/${like.likerUser.id}`);
+                    }}
+                  >
+                    <Avatar className="h-12 w-12 border-2 border-background">
+                      <AvatarImage 
+                        src={like.likerUser.profilePhoto || ""} 
+                        alt={`${like.likerUser.firstName} ${like.likerUser.lastName}`}
+                      />
+                      <AvatarFallback className="text-sm font-semibold">
+                        {like.likerUser.firstName[0]}{like.likerUser.lastName[0]}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-semibold truncate">
+                        {like.likerUser.firstName} {like.likerUser.lastName}
+                      </p>
+                      <p className="text-sm text-muted-foreground truncate">
+                        @{like.likerUser.username} • {like.likerUser.age} years old
+                      </p>
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {new Date(like.createdAt).toLocaleDateString('en-US', { 
+                        month: 'short', 
+                        day: 'numeric' 
+                      })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

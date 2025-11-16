@@ -1,14 +1,16 @@
 import type { Config } from "drizzle-kit";
 
 if (!process.env.DATABASE_URL) {
-  throw new Error("DATABASE_URL, ensure the database is provisioned");
+  throw new Error("DATABASE_URL is required. Ensure the database is provisioned and .env is set.");
 }
 
-export default {
-  out: "./migrations",
-  schema: "./shared/schema.ts",
+const config: Config = {
+  schema: "./shared/schema.ts",     // your schema file
+  out: "./migrations",              // migrations folder
   dialect: "postgresql",
   dbCredentials: {
-    url: process.env.DATABASE_URL,
-  },
-} satisfies Config;
+    url: process.env.DATABASE_URL
+  }
+};
+
+export default config;

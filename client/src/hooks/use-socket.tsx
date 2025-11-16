@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState, useRef } from "react";
 import { useAuth } from "./use-auth";
 import { Message, User } from "@shared/schema";
-import { useNotification } from "./use-notification";
+import { useNotification, showProfileViewNotification, showMessageNotification, showProfileLikeNotification } from "./use-notification";
 
 interface SocketContextType {
   socket: WebSocket | null;
@@ -92,29 +92,76 @@ export function SocketProvider({ children }: { children: React.ReactNode }) {
             console.log('Received notification:', notification);
             
             if (notification.type === 'profile_view') {
-              showNotification({
-                type: 'profile_view',
-                fromUserName: notification.fromUserName,
-                fromUserPhoto: notification.fromUserPhoto,
-                fromUserId: notification.fromUserId,
-                notificationId: notification.id,
-                title: notification.fromUserName,
-                description: 'viewed your profile.'
-              });
+              showProfileViewNotification(
+                notification.fromUserName,
+                notification.fromUserPhoto,
+                notification.fromUserId,
+                notification.id
+              );
             } else if (notification.type === 'message_received') {
-              showNotification({
-                type: 'message_received',
-                fromUserName: notification.fromUserName,
-                fromUserPhoto: notification.fromUserPhoto,
-                fromUserId: notification.fromUserId,
-                notificationId: notification.id,
-                title: notification.fromUserName,
-                description: 'sent you a message.'
-              });
+              showMessageNotification(
+                notification.fromUserName,
+                notification.fromUserPhoto,
+                notification.fromUserId,
+                notification.id
+              );
+            } else if (notification.type === 'profile_like') {
+              showProfileLikeNotification(
+                notification.fromUserName,
+                notification.fromUserPhoto,
+                notification.fromUserId,
+                notification.id
+              );
             }
             
             // Invalidate notification count query to update navbar counter
             window.dispatchEvent(new CustomEvent('notificationReceived'));
+            break;
+            
+          case 'consentRequest':
+            // Handle consent request from another user
+            console.log('Received consent request:', data);
+            window.dispatchEvent(new CustomEvent('consentRequest', { detail: data }));
+            break;
+            
+          case 'consentPending':
+            // Handle pending consent status
+            console.log('Received consent pending:', data);
+            window.dispatchEvent(new CustomEvent('consentPending', { detail: data }));
+            break;
+            
+          case 'consentAccepted':
+            // Handle consent accepted
+            console.log('Received consent accepted:', data);
+            window.dispatchEvent(new CustomEvent('consentAccepted', { detail: data }));
+            break;
+            
+          case 'consentRejected':
+            // Handle consent rejected
+            console.log('Received consent rejected:', data);
+            window.dispatchEvent(new CustomEvent('consentRejected', { detail: data }));
+            break;
+            
+          case 'messageNotificationsRead':
+            // Handle message notifications marked as read when chat is opened
+            console.log('Message notifications marked as read from user:', data.fromUserId);
+            window.dispatchEvent(new CustomEvent('messageRead'));
+            break;
+            
+          case 'messageCountUpdate':
+            // Handle real-time message counter updates
+            console.log('Message count update:', data.action);
+            if (data.action === 'increment') {
+              window.dispatchEvent(new CustomEvent('messageReceived'));
+            }
+            break;
+            
+          case 'notificationCountUpdate':
+            // Handle real-time notification counter updates
+            console.log('Notification count update:', data.action);
+            if (data.action === 'increment') {
+              window.dispatchEvent(new CustomEvent('notificationReceived'));
+            }
             break;
         }
       } catch (error) {

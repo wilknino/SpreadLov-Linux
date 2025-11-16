@@ -33,13 +33,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const loginMutation = useMutation({
     mutationFn: async (credentials: LoginData) => {
-      const res = await apiRequest("POST", "/api/login", credentials);
+      // Use fetch directly to handle 403 errors before throwing
+      const res = await fetch("/api/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(credentials),
+        credentials: "include",
+      });
+      
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        
+        // Check if user needs to verify email (403 status)
+        if (res.status === 403 && errorData.requiresVerification) {
+          const error: any = new Error(errorData.message || "Email not verified. Please complete registration.");
+          error.requiresVerification = true;
+          error.email = errorData.email;
+          throw error;
+        }
+        
+        // Other authentication failures
+        throw new Error(errorData.message || "Invalid username or password");
+      }
       return await res.json();
     },
     onSuccess: (user: SelectUser) => {
       queryClient.setQueryData(["/api/user"], user);
     },
-    onError: (error: Error) => {
+    onError: (error: any) => {
       toast({
         title: "Login failed",
         description: error.message,
@@ -48,13 +69,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     },
   });
 
-  const registerMutation = useMutation({
+  const registerMutation = useMutation<any, Error, InsertUser>({
     mutationFn: async (credentials: InsertUser) => {
-      const res = await apiRequest("POST", "/api/register", credentials);
-      return await res.json();
+      // Use fetch directly to get proper response
+      const res = await fetch("/api/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(credentials),
+        credentials: "include",
+      });
+      
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.message || "Registration failed");
+      }
+      
+      const data = await res.json();
+      return data;
     },
-    onSuccess: (user: SelectUser) => {
-      queryClient.setQueryData(["/api/user"], user);
+    onSuccess: (data: any) => {
+      // User is NOT logged in - they must verify email first
+      // Don't update user data in query client
+      toast({
+        title: "Account created successfully!",
+        description: "Please check your email for a verification code to complete your registration.",
+      });
     },
     onError: (error: Error) => {
       toast({

@@ -1,0 +1,29 @@
+# robots.txt for SpreadLov.com
+# Updated: 2025-11-12
+
+# Allow Googlebot and other search engines to crawl public pages
+User-agent: *
+Allow: /
+Allow: /subscribe
+Allow: /terms
+Allow: /about
+Allow: /privacy-policy
+Allow: /safety-standards
+
+# Disallow crawling of private/protected pages
+Disallow: /discover
+Disallow: /messages
+Disallow: /notifications
+Disallow: /profile
+Disallow: /chat
+Disallow: /auth
+Disallow: /forgot-password
+Disallow: /delete-account
+Disallow: /verify-email
+
+# Disallow crawling of API endpoints and uploads
+Disallow: /api/
+Disallow: /uploads/
+
+# Sitemap location
+Sitemap: https://spreadlov.com/sitemap.xml

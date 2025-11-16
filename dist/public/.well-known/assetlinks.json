@@ -1,0 +1,15 @@
+[
+  {
+    "relation": [
+      "delegate_permission/common.handle_all_urls",
+      "delegate_permission/common.get_login_creds"
+    ],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.spreadlov.app",
+      "sha256_cert_fingerprints": [
+        "6E:50:F2:11:9F:BF:33:0D:FB:DF:0D:11:C6:C2:61:36:92:05:D3:F8:19:34:F1:CE:A9:E3:03:30:E0:D8:FF:51"
+      ]
+    }
+  }
+]

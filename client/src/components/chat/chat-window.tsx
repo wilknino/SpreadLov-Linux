@@ -19,12 +19,16 @@ interface ChatWindowProps {
 }
 
 export default function ChatWindow({ currentUser, selectedUser, onToggleUserInfo }: ChatWindowProps) {
+  console.log('[ChatWindow] 🔄 Component RENDER - selectedUser:', selectedUser?.id, selectedUser?.firstName);
+  
   const { sendMessage, sendTyping, typingUsers } = useSocket();
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [messageText, setMessageText] = useState("");
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [currentSelectedUser, setCurrentSelectedUser] = useState(selectedUser);
+  const [consentStatus, setConsentStatus] = useState<string | null>(null);
+  const [consentRequest, setConsentRequest] = useState<any>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout>();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -111,6 +115,125 @@ export default function ChatWindow({ currentUser, selectedUser, onToggleUserInfo
       window.removeEventListener('onlineStatusChanged', handleOnlineStatusChanged as EventListener);
     };
   }, [selectedUser?.id]);
+
+  // Fetch consent status when selectedUser changes
+  useEffect(() => {
+    const fetchConsentStatus = async () => {
+      if (!selectedUser) {
+        console.log('[ChatWindow] Consent fetch skipped: selectedUser is null/undefined');
+        return;
+      }
+      
+      console.log(`[ChatWindow] ===== FETCHING CONSENT STATUS for user ${selectedUser.id} (${selectedUser.firstName}) =====`);
+      try {
+        const response = await fetch(`/api/consent/${selectedUser.id}`, {
+          credentials: 'include',
+        });
+        console.log(`[ChatWindow] Consent API response status: ${response.status}`);
+        if (response.ok) {
+          const data = await response.json();
+          console.log('[ChatWindow] Fetched consent status:', JSON.stringify(data, null, 2));
+          
+          // Handle different status types
+          if (data.status === 'pending' && data.consent && data.requester) {
+            // We are the responder - show Accept/Reject UI
+            console.log('[ChatWindow] ✅ Setting consent request from API data (we are responder)');
+            console.log('[ChatWindow] Consent ID:', data.consent.id);
+            console.log('[ChatWindow] Requester:', data.requester.firstName, data.requester.id);
+            setConsentStatus('pending');
+            setConsentRequest({
+              consent: data.consent,
+              requester: data.requester
+            });
+          } else if (data.status === 'waiting') {
+            // We are the requester - show waiting UI
+            console.log('[ChatWindow] ⏳ We are waiting for consent');
+            setConsentStatus('waiting');
+            setConsentRequest(null);
+          } else {
+            // Other statuses (accepted, rejected, null)
+            console.log('[ChatWindow] Other status:', data.status || 'null');
+            setConsentStatus(data.status || null);
+            setConsentRequest(null);
+          }
+        } else {
+          console.error('[ChatWindow] ❌ Consent API failed with status:', response.status);
+        }
+      } catch (error) {
+        console.error('[ChatWindow] ❌ Failed to fetch consent status:', error);
+      }
+    };
+
+    console.log('[ChatWindow] useEffect triggered for consent fetch, selectedUser:', selectedUser?.id);
+    fetchConsentStatus();
+  }, [selectedUser?.id]);
+
+  // Listen for consent events
+  useEffect(() => {
+    const handleConsentRequest = (event: CustomEvent) => {
+      const { consent, requester, firstMessage } = event.detail;
+      console.log('[ChatWindow] 📨 Received consent request event');
+      console.log('[ChatWindow] Requester:', requester?.firstName, requester?.id);
+      console.log('[ChatWindow] Consent ID:', consent?.id);
+      console.log('[ChatWindow] Selected User:', selectedUser?.firstName, selectedUser?.id);
+      console.log('[ChatWindow] First Message:', firstMessage?.content);
+      
+      // Check if this consent request is for the current conversation
+      if (selectedUser && requester && requester.id === selectedUser.id) {
+        console.log('[ChatWindow] ✅ Setting consent request for selected user - MATCH!');
+        setConsentRequest({ consent, requester });
+        setConsentStatus('pending');
+      } else {
+        console.log('[ChatWindow] ❌ Consent request NOT for current selected user');
+        console.log('[ChatWindow] Condition failed: selectedUser?', !!selectedUser, 'requester.id === selectedUser.id?', requester?.id === selectedUser?.id);
+      }
+    };
+
+    const handleConsentPending = (event: CustomEvent) => {
+      const { receiverId } = event.detail;
+      console.log('[ChatWindow] Received consent pending event:', { receiverId, selectedUserId: selectedUser?.id });
+      
+      if (selectedUser && receiverId === selectedUser.id) {
+        console.log('[ChatWindow] Setting consent status to waiting (we sent request)');
+        setConsentStatus('waiting');
+        setConsentRequest(null);
+      } else {
+        console.log('[ChatWindow] Consent pending not for current selected user');
+      }
+    };
+
+    const handleConsentAccepted = (event: CustomEvent) => {
+      const { responderId } = event.detail;
+      if (selectedUser && responderId === selectedUser.id) {
+        setConsentStatus('accepted');
+        setConsentRequest(null);
+        toast({
+          title: "Request accepted!",
+          description: `${selectedUser.firstName} accepted your chat request.`,
+        });
+      }
+    };
+
+    const handleConsentRejected = (event: CustomEvent) => {
+      const { responderId } = event.detail;
+      if (selectedUser && responderId === selectedUser.id) {
+        setConsentStatus('rejected');
+        setConsentRequest(null);
+      }
+    };
+
+    window.addEventListener('consentRequest', handleConsentRequest as EventListener);
+    window.addEventListener('consentPending', handleConsentPending as EventListener);
+    window.addEventListener('consentAccepted', handleConsentAccepted as EventListener);
+    window.addEventListener('consentRejected', handleConsentRejected as EventListener);
+
+    return () => {
+      window.removeEventListener('consentRequest', handleConsentRequest as EventListener);
+      window.removeEventListener('consentPending', handleConsentPending as EventListener);
+      window.removeEventListener('consentAccepted', handleConsentAccepted as EventListener);
+      window.removeEventListener('consentRejected', handleConsentRejected as EventListener);
+    };
+  }, [selectedUser?.id, selectedUser?.firstName, toast]);
 
   // Listen for new messages via WebSocket
   useEffect(() => {
@@ -256,6 +379,70 @@ export default function ChatWindow({ currentUser, selectedUser, onToggleUserInfo
     }
   };
 
+  const handleAcceptConsent = async () => {
+    if (!consentRequest) return;
+    
+    try {
+      const response = await fetch('/api/consent/accept', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          consentId: consentRequest.consent.id,
+          requesterId: consentRequest.requester.id,
+        }),
+      });
+      
+      if (response.ok) {
+        setConsentStatus('accepted');
+        setConsentRequest(null);
+        toast({
+          title: "Request accepted",
+          description: `You can now chat with ${selectedUser?.firstName}.`,
+        });
+      }
+    } catch (error) {
+      console.error('Failed to accept consent:', error);
+      toast({
+        title: "Error",
+        description: "Failed to accept request",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleRejectConsent = async () => {
+    if (!consentRequest) return;
+    
+    try {
+      const response = await fetch('/api/consent/reject', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          consentId: consentRequest.consent.id,
+          requesterId: consentRequest.requester.id,
+        }),
+      });
+      
+      if (response.ok) {
+        setConsentStatus('rejected');
+        setConsentRequest(null);
+        toast({
+          title: "Request declined",
+          description: `You declined ${selectedUser?.firstName}'s chat request.`,
+        });
+      }
+    } catch (error) {
+      console.error('Failed to reject consent:', error);
+      toast({
+        title: "Error",
+        description: "Failed to decline request",
+        variant: "destructive",
+      });
+    }
+  };
+
   const formatTime = (date: Date | string) => {
     return new Date(date).toLocaleTimeString('en-US', { 
       hour: 'numeric', 
@@ -377,6 +564,64 @@ export default function ChatWindow({ currentUser, selectedUser, onToggleUserInfo
             );
           })}
 
+          {/* Consent Request */}
+          {consentRequest && (
+            <div className="flex justify-center py-4">
+              <div className="max-w-md w-full bg-gradient-to-br from-blue-500/10 to-purple-500/10 border border-blue-500/20 rounded-2xl p-6 shadow-lg">
+                <div className="text-center space-y-4">
+                  <div className="mx-auto w-12 h-12 bg-gradient-to-br from-blue-500 to-purple-500 rounded-full flex items-center justify-center">
+                    <Send className="h-6 w-6 text-white" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-lg mb-1">
+                      Chat Request
+                    </h3>
+                    <p className="text-sm text-muted-foreground">
+                      {consentRequest.requester.firstName} wants to chat with you. Do you want to accept this request?
+                    </p>
+                  </div>
+                  <div className="flex gap-3 justify-center">
+                    <Button
+                      onClick={handleAcceptConsent}
+                      className="bg-gradient-to-r from-blue-500 to-purple-500 hover:from-blue-600 hover:to-purple-600"
+                    >
+                      Accept
+                    </Button>
+                    <Button
+                      onClick={handleRejectConsent}
+                      variant="outline"
+                    >
+                      Decline
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Waiting for Consent - shown when current user is waiting */}
+          {consentStatus === 'waiting' && (
+            <div className="flex justify-center py-4">
+              <div className="bg-blue-500/10 border border-blue-500/20 rounded-xl px-6 py-3">
+                <p className="text-sm text-muted-foreground flex items-center gap-2">
+                  <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
+                  Waiting for {selectedUser.firstName} to accept your chat request...
+                </p>
+              </div>
+            </div>
+          )}
+
+          {/* Request Declined */}
+          {consentStatus === 'rejected' && (
+            <div className="flex justify-center py-4">
+              <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-6 py-3">
+                <p className="text-sm text-red-600 dark:text-red-400">
+                  {selectedUser.firstName} has declined your chat request.
+                </p>
+              </div>
+            </div>
+          )}
+
           {/* Typing Indicator */}
           {typingUsers[selectedUser.id] && (
             <div className="flex items-start space-x-3" data-testid="typing-indicator">
@@ -407,7 +652,7 @@ export default function ChatWindow({ currentUser, selectedUser, onToggleUserInfo
             variant="ghost"
             size="sm"
             onClick={handleFileUpload}
-            disabled={imageUploadMutation.isPending}
+            disabled={imageUploadMutation.isPending || consentStatus === 'pending' || consentStatus === 'waiting' || consentStatus === 'rejected'}
             data-testid="button-upload-file"
           >
             {imageUploadMutation.isPending ? (
@@ -419,10 +664,16 @@ export default function ChatWindow({ currentUser, selectedUser, onToggleUserInfo
 
           <div className="flex-1 relative">
             <Textarea
-              placeholder="Type a message..."
+              placeholder={
+                consentStatus === 'pending' ? "Waiting for your response..." :
+                consentStatus === 'waiting' ? "Waiting for chat permission..." :
+                consentStatus === 'rejected' ? "Chat request declined" :
+                "Type a message..."
+              }
               value={messageText}
               onChange={handleTyping}
               onKeyDown={handleKeyPress}
+              disabled={consentStatus === 'pending' || consentStatus === 'waiting' || consentStatus === 'rejected'}
               className="resize-none min-h-[48px] max-h-32 pr-10"
               data-testid="textarea-message-input"
             />
@@ -432,6 +683,7 @@ export default function ChatWindow({ currentUser, selectedUser, onToggleUserInfo
               size="sm"
               className="absolute right-2 top-1/2 transform -translate-y-1/2"
               onClick={() => setShowEmojiPicker(!showEmojiPicker)}
+              disabled={consentStatus === 'pending' || consentStatus === 'waiting' || consentStatus === 'rejected'}
               data-testid="button-emoji-picker"
             >
               <Smile className="h-4 w-4" />
@@ -450,7 +702,7 @@ export default function ChatWindow({ currentUser, selectedUser, onToggleUserInfo
 
           <Button
             onClick={handleSendMessage}
-            disabled={!messageText.trim()}
+            disabled={!messageText.trim() || consentStatus === 'pending' || consentStatus === 'waiting' || consentStatus === 'rejected'}
             data-testid="button-send-message"
           >
             <Send className="h-4 w-4" />

@@ -42,6 +42,8 @@ export function NotificationToaster() {
       setLocation(`/profile/${notification.fromUserId}`);
     } else if (notification.type === 'message_received' && notification.fromUserId) {
       setLocation(`/chat/${notification.fromUserId}`);
+    } else if (notification.type === 'profile_like' && notification.fromUserId) {
+      setLocation(`/profile/${notification.fromUserId}`);
     }
   }
 

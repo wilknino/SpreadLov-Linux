@@ -5,6 +5,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { 
   ArrowLeft,
   MapPin, 
@@ -25,6 +26,8 @@ export default function UserProfilePage() {
   const [profileUser, setProfileUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
   const [selectedPhotoIndex, setSelectedPhotoIndex] = useState<number | null>(null);
+  const [isLiked, setIsLiked] = useState(false);
+  const [isLiking, setIsLiking] = useState(false);
 
   const fetchUserProfile = async () => {
     if (!userId) return;
@@ -44,8 +47,52 @@ export default function UserProfilePage() {
     }
   };
 
+  const checkLikeStatus = async () => {
+    if (!userId) return;
+    
+    try {
+      const response = await fetch(`/api/likes/check/${userId}`);
+      if (response.ok) {
+        const data = await response.json();
+        setIsLiked(data.isLiked);
+      }
+    } catch (error) {
+      console.error("Error checking like status:", error);
+    }
+  };
+
+  const handleLikeToggle = async () => {
+    if (!userId || isLiking) return;
+    
+    setIsLiking(true);
+    try {
+      if (isLiked) {
+        // Unlike
+        const response = await fetch(`/api/likes/${userId}`, {
+          method: 'DELETE',
+        });
+        if (response.ok) {
+          setIsLiked(false);
+        }
+      } else {
+        // Like
+        const response = await fetch(`/api/likes/${userId}`, {
+          method: 'POST',
+        });
+        if (response.ok) {
+          setIsLiked(true);
+        }
+      }
+    } catch (error) {
+      console.error("Error toggling like:", error);
+    } finally {
+      setIsLiking(false);
+    }
+  };
+
   useEffect(() => {
     fetchUserProfile();
+    checkLikeStatus();
   }, [userId]);
 
   useEffect(() => {
@@ -95,8 +142,8 @@ export default function UserProfilePage() {
     : userPhotos;
 
   return (
-    <div className="min-h-screen bg-background pb-20 md:pb-6">
-      <div className="sticky top-0 z-40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 border-b">
+    <div className="flex flex-col h-screen bg-background">
+      <div className="flex-none z-40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80 border-b">
         <div className="container max-w-5xl mx-auto flex items-center gap-4 p-4">
           <Button
             variant="ghost"
@@ -106,8 +153,11 @@ export default function UserProfilePage() {
           >
             <ArrowLeft className="h-5 w-5" />
           </Button>
+          <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center shadow-lg">
+            <User2 className="h-5 w-5 sm:h-6 sm:w-6 text-white" />
+          </div>
           <div className="flex-1">
-            <h1 className="text-xl md:text-2xl font-bold bg-gradient-to-r from-primary to-primary/70 bg-clip-text text-transparent">
+            <h1 className="text-xl md:text-2xl font-bold bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 bg-clip-text text-transparent">
               {profileUser.firstName} {profileUser.lastName}
             </h1>
             <p className="text-xs md:text-sm text-muted-foreground">
@@ -117,8 +167,10 @@ export default function UserProfilePage() {
         </div>
       </div>
 
-      <div className="container max-w-5xl mx-auto p-4 space-y-6">
-        <Card className="overflow-hidden rounded-2xl shadow-lg border-0 bg-gradient-to-br from-card to-card/80">
+      {/* Scrollable Content */}
+      <ScrollArea className="flex-1 pb-20 md:pb-6">
+        <div className="container max-w-5xl mx-auto p-4 space-y-6">
+          <Card className="overflow-hidden rounded-2xl shadow-lg border-0 bg-gradient-to-br from-card to-card/80">
           <div className="relative">
             <div className="h-32 md:h-40 bg-gradient-to-br from-primary/30 via-primary/20 to-primary/10"></div>
             
@@ -188,11 +240,17 @@ export default function UserProfilePage() {
             <span className="font-semibold">Start Chat</span>
           </Button>
           <Button 
-            variant="outline"
-            className="h-12 md:h-14 rounded-xl hover:shadow-lg transition-all duration-300 hover:scale-105 hover:bg-red-500/10 hover:text-red-500 hover:border-red-500/50"
+            variant={isLiked ? "default" : "outline"}
+            className={`h-12 md:h-14 rounded-xl hover:shadow-lg transition-all duration-300 hover:scale-105 ${
+              isLiked 
+                ? 'bg-red-500 hover:bg-red-600 text-white' 
+                : 'hover:bg-red-500/10 hover:text-red-500 hover:border-red-500/50'
+            }`}
+            onClick={handleLikeToggle}
+            disabled={isLiking}
           >
-            <Heart className="h-4 w-4 md:h-5 md:w-5 mr-2" />
-            <span className="font-semibold">Like Profile</span>
+            <Heart className={`h-4 w-4 md:h-5 md:w-5 mr-2 ${isLiked ? 'fill-current' : ''}`} />
+            <span className="font-semibold">{isLiked ? 'Liked Profile' : 'Like Profile'}</span>
           </Button>
         </div>
 
@@ -296,7 +354,8 @@ export default function UserProfilePage() {
             </div>
           </div>
         </Card>
-      </div>
+        </div>
+      </ScrollArea>
 
       {selectedPhotoIndex !== null && (
         <div 

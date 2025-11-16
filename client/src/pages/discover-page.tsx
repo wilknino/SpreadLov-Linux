@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "@/hooks/use-auth";
 import { useSocket } from "@/hooks/use-socket";
 import { Card, CardContent } from "@/components/ui/card";
@@ -13,7 +13,7 @@ import { Label } from "@/components/ui/label";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { Filter, MapPin, Calendar, Heart, X, Check, ChevronsUpDown } from "lucide-react";
+import { Filter, MapPin, Calendar, Heart, X, Check, ChevronsUpDown, Compass, Cake, Users } from "lucide-react";
 import { User } from "@shared/schema";
 import { PhotoCarousel } from "@/components/ui/photo-carousel";
 import { useLocation } from "wouter";
@@ -40,7 +40,7 @@ export default function DiscoverPage() {
   const [appliedFilters, setAppliedFilters] = useState({
     gender: "",
     location: "",
-    ageMin: 20,
+    ageMin: 18,
     ageMax: 40,
   });
   
@@ -48,11 +48,11 @@ export default function DiscoverPage() {
   const [tempFilters, setTempFilters] = useState({
     gender: "",
     location: "",
-    ageMin: 20,
+    ageMin: 18,
     ageMax: 40,
   });
 
-  const fetchUsers = async () => {
+  const fetchUsers = useCallback(async () => {
     try {
       const queryParams = new URLSearchParams();
       if (appliedFilters.gender) queryParams.set("gender", appliedFilters.gender);
@@ -70,7 +70,7 @@ export default function DiscoverPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [appliedFilters]);
 
   const loadSavedFilters = async () => {
     try {
@@ -124,7 +124,7 @@ export default function DiscoverPage() {
       });
       
       if (response.ok) {
-        const defaultFilters = { gender: "", location: "", ageMin: 20, ageMax: 40 };
+        const defaultFilters = { gender: "", location: "", ageMin: 18, ageMax: 40 };
         setTempFilters(defaultFilters);
         setAppliedFilters(defaultFilters);
         setFilterOpen(false);
@@ -134,7 +134,7 @@ export default function DiscoverPage() {
     }
   };
   
-  const hasActiveFilters = appliedFilters.gender || appliedFilters.location || appliedFilters.ageMin !== 20 || appliedFilters.ageMax !== 40;
+  const hasActiveFilters = appliedFilters.gender || appliedFilters.location || appliedFilters.ageMin !== 18 || appliedFilters.ageMax !== 40;
   
   const removeFilter = async (filterType: 'gender' | 'location' | 'age') => {
     let updatedFilters = { ...appliedFilters };
@@ -144,7 +144,7 @@ export default function DiscoverPage() {
     } else if (filterType === 'location') {
       updatedFilters.location = "";
     } else if (filterType === 'age') {
-      updatedFilters.ageMin = 20;
+      updatedFilters.ageMin = 18;
       updatedFilters.ageMax = 40;
     }
     
@@ -165,13 +165,51 @@ export default function DiscoverPage() {
 
   // Listen for real-time online status changes
   useEffect(() => {
-    const handleOnlineStatusChanged = () => {
-      fetchUsers();
+    const handleOnlineStatusChanged = async (event: Event) => {
+      const customEvent = event as CustomEvent;
+      const { userId, isOnline } = customEvent.detail;
+      
+      if (!user || userId === user.id) return;
+      
+      if (isOnline) {
+        // User came online - check if they match current filters by fetching online users
+        try {
+          const queryParams = new URLSearchParams();
+          if (appliedFilters.gender) queryParams.set("gender", appliedFilters.gender);
+          if (appliedFilters.location) queryParams.set("location", appliedFilters.location);
+          queryParams.set("ageMin", appliedFilters.ageMin.toString());
+          queryParams.set("ageMax", appliedFilters.ageMax.toString());
+
+          const response = await fetch(`/api/users/online?${queryParams}`);
+          if (response.ok) {
+            const onlineUsers = await response.json();
+            const newUser = onlineUsers.find((u: User) => u.id === userId);
+            
+            if (newUser) {
+              // User matches filters and is online - add to list if not already present
+              setUsers(prevUsers => {
+                const exists = prevUsers.some(u => u.id === userId);
+                if (!exists) {
+                  return [...prevUsers, newUser];
+                }
+                return prevUsers.map(u => 
+                  u.id === userId ? { ...u, isOnline: true } : u
+                );
+              });
+            }
+          }
+        } catch (error) {
+          console.error("Failed to fetch user for real-time update:", error);
+        }
+      } else {
+        // User went offline - remove from list
+        setUsers(prevUsers => prevUsers.filter(u => u.id !== userId));
+      }
     };
 
     window.addEventListener('onlineStatusChanged', handleOnlineStatusChanged);
     return () => window.removeEventListener('onlineStatusChanged', handleOnlineStatusChanged);
-  }, []);
+  }, [user, appliedFilters]);
 
   if (!user) return null;
 
@@ -187,7 +225,7 @@ export default function DiscoverPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-background to-secondary/20 pb-20">
+    <div className="min-h-screen bg-background pb-20">
       {/* Filter Modal Dialog */}
       <Dialog open={filterOpen} onOpenChange={setFilterOpen}>
         <DialogContent className="max-w-lg max-h-[90vh] p-0 gap-0 overflow-hidden flex flex-col">
@@ -357,11 +395,16 @@ export default function DiscoverPage() {
       {/* Header */}
       <div className="sticky top-0 z-30 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 border-b">
         <div className="flex items-center justify-between p-3 sm:p-4">
-          <div>
-            <h1 className="text-xl sm:text-2xl font-bold bg-gradient-to-r from-primary to-primary/70 bg-clip-text text-transparent">
-              Discover
-            </h1>
-            <p className="text-xs sm:text-sm text-muted-foreground">{users.length} {users.length === 1 ? 'person' : 'people'} online now</p>
+          <div className="flex items-center gap-2 sm:gap-3">
+            <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center shadow-lg">
+              <Compass className="h-5 w-5 sm:h-6 sm:w-6 text-white" />
+            </div>
+            <div>
+              <h1 className="text-xl sm:text-2xl font-bold bg-gradient-to-r from-blue-600 via-purple-600 to-pink-600 bg-clip-text text-transparent">
+                Discover
+              </h1>
+              <p className="text-xs sm:text-sm text-muted-foreground">{users.length} {users.length === 1 ? 'person' : 'people'} online now</p>
+            </div>
           </div>
           
           {/* Filter Button - Top Right */}
@@ -375,7 +418,7 @@ export default function DiscoverPage() {
             {hasActiveFilters && (
               <div className="absolute -top-1 -right-1 h-4 w-4 bg-primary rounded-full flex items-center justify-center">
                 <span className="text-[10px] text-primary-foreground font-bold">
-                  {[appliedFilters.gender, appliedFilters.location, (appliedFilters.ageMin !== 20 || appliedFilters.ageMax !== 40) ? 'age' : ''].filter(Boolean).length}
+                  {[appliedFilters.gender, appliedFilters.location, (appliedFilters.ageMin !== 18 || appliedFilters.ageMax !== 40) ? 'age' : ''].filter(Boolean).length}
                 </span>
               </div>
             )}
@@ -426,14 +469,18 @@ export default function DiscoverPage() {
         {users.length === 0 ? (
           <div className="text-center py-8 sm:py-12 px-4">
             <Heart className="h-8 w-8 sm:h-12 sm:w-12 text-muted-foreground mx-auto mb-3 sm:mb-4" />
-            <h3 className="text-base sm:text-lg font-semibold mb-2">No one found</h3>
-            <p className="text-sm sm:text-base text-muted-foreground">Try adjusting your filters to see more people</p>
+            <h2 className="text-base sm:text-lg font-semibold mb-2">No matches found</h2>
+            <p className="text-sm sm:text-base text-muted-foreground">Try adjusting your filters to discover more compatible singles</p>
           </div>
         ) : (
           <div className="grid grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-7 2xl:grid-cols-8 gap-1.5 sm:gap-2">
             {users.map((profile) => (
-              <Card key={profile.id} className="overflow-hidden hover:shadow-lg active:scale-95 transition-all duration-300 group cursor-pointer">
-                <CardContent className="p-0">
+              <Card 
+  key={profile.id} 
+  className="overflow-hidden hover:shadow-lg active:scale-95 transition-all duration-300 group cursor-pointer"
+  onClick={() => setLocation(`/profile/${profile.id}`)}
+>
+  <CardContent className="p-0">
                   <div className="relative aspect-[4/3] overflow-hidden">
                     <PhotoCarousel
                       photos={[profile.profilePhoto, ...(profile.photos && Array.isArray(profile.photos) ? profile.photos : [])].filter(Boolean)}
@@ -446,46 +493,58 @@ export default function DiscoverPage() {
                     
                     {profile.isOnline && (
                       <div className="absolute top-2 right-2">
-                        <div className="w-3 h-3 bg-green-500 rounded-full border-2 border-white animate-pulse"></div>
+                        <div className="w-3 h-3 bg-green-500 rounded-full border-2 border-white shadow-lg shadow-green-500/50 animate-pulse"></div>
                       </div>
                     )}
                   </div>
 
-                  <div className="p-1.5 space-y-1">
-                    <div>
-                      <h3 className="font-semibold text-xs leading-tight">
-                        {profile.firstName} {profile.lastName}
-                      </h3>
-                      <div className="flex items-center gap-1 text-xs text-muted-foreground mt-0.5">
-                        <span>{profile.age}</span>
-                        <span>•</span>
-                        <span className="capitalize">{profile.gender}</span>
-                        {profile.location && (
-                          <>
-                            <span>•</span>
-                            <span className="truncate text-xs">{profile.location}</span>
-                          </>
-                        )}
-                      </div>
-                    </div>
+                  <div className="p-2 sm:p-1.5 space-y-1.5 sm:space-y-1">
+                  <div className="space-y-0.5">
+  <h3 className="font-semibold text-xs sm:text-xs leading-tight line-clamp-1">
+    {profile.firstName} {profile.lastName}
+  </h3>
+  <div className="flex items-center gap-1 text-[10px] sm:text-xs text-muted-foreground">
+    <Cake className="h-2.5 w-2.5 sm:h-3 sm:w-3 flex-shrink-0 text-blue-500/70" />
+    <span>{profile.age}</span>
+    <span className="mx-0.5">•</span>
+    <Users className="h-2.5 w-2.5 sm:h-3 sm:w-3 flex-shrink-0 text-purple-500/70" />
+    <span className="capitalize">{profile.gender}</span>
+  </div>
+  <div className="flex items-center gap-1 text-[10px] sm:text-xs text-muted-foreground min-h-[14px] sm:min-h-[16px]">
+    {profile.location ? (
+      <>
+        <MapPin className="h-2.5 w-2.5 sm:h-3 sm:w-3 flex-shrink-0 text-green-500/70" />
+        <span className="line-clamp-1">{profile.location}</span>
+      </>
+    ) : (
+      <span className="text-transparent select-none">.</span>
+    )}
+  </div>
+</div>
 
-                    <div className="flex gap-0.5 pt-0.5">
-                      <Button 
-                        size="sm" 
-                        className="flex-1 text-xs px-1 py-0.5 h-6"
-                        onClick={() => setLocation(`/profile/${profile.id}`)}
-                      >
-                        Profile
-                      </Button>
-                      <Button 
-                        size="sm" 
-                        variant="outline" 
-                        className="flex-1 text-xs px-1 py-0.5 h-6"
-                        onClick={() => setLocation(`/chat/${profile.id}`)}
-                      >
-                        Chat
-                      </Button>
-                    </div>
+                    <div className="flex gap-1 sm:gap-0.5 pt-0.5">
+  <Button 
+    size="sm" 
+    className="flex-1 text-[10px] sm:text-xs px-1.5 sm:px-1 py-1 sm:py-0.5 h-7 sm:h-6 font-medium"
+    onClick={(e) => {
+      e.stopPropagation();
+      setLocation(`/profile/${profile.id}`);
+    }}
+  >
+    Profile
+  </Button>
+  <Button 
+    size="sm" 
+    variant="outline" 
+    className="flex-1 text-[10px] sm:text-xs px-1.5 sm:px-1 py-1 sm:py-0.5 h-7 sm:h-6 font-medium"
+    onClick={(e) => {
+      e.stopPropagation();
+      setLocation(`/chat/${profile.id}`);
+    }}
+  >
+    Chat
+  </Button>
+</div>
                   </div>
                 </CardContent>
               </Card>

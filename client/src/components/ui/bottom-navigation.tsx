@@ -15,12 +15,15 @@ const navItems = [
     label: "Messages",
     icon: MessageCircle,
     path: "/messages",
+    hasCounter: true,
+    counterType: "messages",
   },
   {
     label: "Notifications",
     icon: Bell,
     path: "/notifications",
     hasCounter: true,
+    counterType: "notifications",
   },
   {
     label: "Profile",
@@ -49,17 +52,44 @@ function NotificationIcon({ isActive, unreadCount }: { isActive: boolean, unread
   )
 }
 
+function MessageIcon({ isActive, unreadCount }: { isActive: boolean, unreadCount: number }) {
+  return (
+    <div className="relative">
+      <MessageCircle 
+        className={cn(
+          "h-5 w-5 transition-all duration-200",
+          isActive ? "scale-110" : "scale-100"
+        )} 
+      />
+      {unreadCount > 0 && (
+        <div className="absolute -top-2 -right-2 h-5 w-5 bg-primary rounded-full flex items-center justify-center min-w-[20px] shadow-lg">
+          <span className="text-xs font-bold text-primary-foreground leading-none">
+            {unreadCount > 99 ? "99+" : unreadCount}
+          </span>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export function BottomNavigation() {
   const [location] = useLocation();
   const queryClient = useQueryClient();
   
-  const { data: unreadData } = useQuery<{ count: number }>({
+  const { data: unreadNotificationsData } = useQuery<{ count: number }>({
     queryKey: ["/api/notifications/unread-count"],
     queryFn: getQueryFn({ on401: "returnNull" }),
     refetchInterval: 30000,
   });
   
-  const unreadNotificationsCount = unreadData?.count || 0;
+  const { data: unreadMessagesData } = useQuery<{ count: number }>({
+    queryKey: ["/api/messages/unread-count"],
+    queryFn: getQueryFn({ on401: "returnNull" }),
+    refetchInterval: 30000,
+  });
+  
+  const unreadNotificationsCount = unreadNotificationsData?.count || 0;
+  const unreadMessagesCount = unreadMessagesData?.count || 0;
 
   useEffect(() => {
     const handleNotificationUpdate = () => {
@@ -68,12 +98,22 @@ export function BottomNavigation() {
       });
     };
 
+    const handleMessageUpdate = () => {
+      queryClient.invalidateQueries({ 
+        queryKey: ["/api/messages/unread-count"] 
+      });
+    };
+
     window.addEventListener('notificationReceived', handleNotificationUpdate);
     window.addEventListener('notificationRead', handleNotificationUpdate);
+    window.addEventListener('messageReceived', handleMessageUpdate);
+    window.addEventListener('messageRead', handleMessageUpdate);
     
     return () => {
       window.removeEventListener('notificationReceived', handleNotificationUpdate);
       window.removeEventListener('notificationRead', handleNotificationUpdate);
+      window.removeEventListener('messageReceived', handleMessageUpdate);
+      window.removeEventListener('messageRead', handleMessageUpdate);
     };
   }, [queryClient]);
 
@@ -104,7 +144,11 @@ export function BottomNavigation() {
               )}
             >
               {item.hasCounter ? (
-                <NotificationIcon isActive={isActive} unreadCount={unreadNotificationsCount} />
+                item.counterType === "messages" ? (
+                  <MessageIcon isActive={isActive} unreadCount={unreadMessagesCount} />
+                ) : (
+                  <NotificationIcon isActive={isActive} unreadCount={unreadNotificationsCount} />
+                )
               ) : (
                 <item.icon 
                   className={cn(

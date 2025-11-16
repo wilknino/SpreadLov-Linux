@@ -6,15 +6,19 @@ import multer from "multer";
 import path from "path";
 import { storage } from "./storage";
 import { setupAuth } from "./auth";
-import { insertMessageSchema, insertConversationSchema, insertNotificationSchema, type User } from "@shared/schema";
+import { sendSupportEmail, sendAccountDeletionEmail, generateVerificationCode, sendSubscribeEmail } from "./email";
+import { insertMessageSchema, insertConversationSchema, insertNotificationSchema, insertSubscriberSchema, type User } from "@shared/schema";
 import { parse } from "url";
 import { parse as parseCookie } from "cookie";
+import { initializeFirebase } from "./fcm-service";
+import { handleNotificationWebhook } from "./notification-webhook";
 
 // Helper to convert user to safe public profile
 function toPublicUser(user: User) {
   return {
     id: user.id,
     username: user.username,
+    email: user.email,
     firstName: user.firstName,
     lastName: user.lastName,
     gender: user.gender,
@@ -24,7 +28,10 @@ function toPublicUser(user: User) {
     profilePhoto: user.profilePhoto,
     photos: user.photos,
     isOnline: user.isOnline,
-    lastSeen: user.lastSeen
+    lastSeen: user.lastSeen,
+    createdAt: user.createdAt,
+    emailVerified: user.emailVerified,
+    needsProfileCompletion: user.needsProfileCompletion
   };
 }
 
@@ -52,6 +59,9 @@ const upload = multer({
 });
 
 export async function registerRoutes(app: Express): Promise<Server> {
+  // Initialize Firebase for push notifications
+  initializeFirebase();
+
   // Setup authentication routes
   setupAuth(app);
 
@@ -69,6 +79,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       
       // Filter out current user
       users = users.filter(user => user.id !== req.user!.id);
+      
+      // Only show email-verified users to others (unverified users can't be discovered)
+      users = users.filter(user => user.emailVerified === true);
       
       // Apply filters with validation
       if (gender && gender !== '') {
@@ -114,6 +127,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Filter out current user
       users = users.filter(user => user.id !== req.user!.id);
       
+      // Only show email-verified users to others (unverified users can't be discovered)
+      users = users.filter(user => user.emailVerified === true);
+      
       // Apply filters with validation
       if (gender && gender !== '') {
         users = users.filter(user => user.gender === gender);
@@ -146,61 +162,88 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Get specific user profile by ID
-  app.get("/api/users/:userId", async (req: AuthenticatedRequest, res: Response) => {
-    if (!req.isAuthenticated()) return res.sendStatus(401);
+app.get("/api/users/:userId", async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.isAuthenticated()) return res.sendStatus(401);
+  
+  try {
+    const { userId } = req.params;
     
+    // Prevent users from accessing their own profile through this endpoint
+    if (userId === req.user!.id) {
+      return res.status(400).json({ message: "Use /api/user for your own profile" });
+    }
+    
+    const user = await storage.getUser(userId);
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
+    
+    // Create or update profile view notification to avoid duplicates
     try {
-      const { userId } = req.params;
+      // Check if notification already exists from this user
+      const existingNotification = await storage.findExistingNotification(
+        userId,
+        req.user!.id,
+        "profile_view"
+      );
       
-      // Prevent users from accessing their own profile through this endpoint
-      if (userId === req.user!.id) {
-        return res.status(400).json({ message: "Use /api/user for your own profile" });
-      }
+      let notification;
+      let isNewNotification = false;
+      let wasRead = false;
       
-      const user = await storage.getUser(userId);
-      if (!user) {
-        return res.status(404).json({ message: "User not found" });
-      }
-      
-      // Create profile view notification for the viewed user
-      try {
-        const notification = await storage.createNotification({
+      if (existingNotification) {
+        // Store whether the notification was read before updating
+        wasRead = existingNotification.isRead ?? false;
+        // Update timestamp of existing notification instead of creating new one
+        notification = await storage.updateNotificationTimestamp(existingNotification.id);
+      } else {
+        // Create new notification (trigger will fire and send push notification)
+        notification = await storage.createNotification({
           userId: userId,
           type: "profile_view",
           fromUserId: req.user!.id,
         });
-        
-        // Send real-time notification to viewed user if they're online
-        const fromUser = await storage.getUser(req.user!.id);
-        if (fromUser) {
-          const sent = sendToUser(userId, {
-            type: 'newNotification',
-            notification: {
-              id: notification.id,
-              type: 'profile_view',
-              fromUserId: req.user!.id,
-              fromUserName: fromUser.firstName,
-              fromUserPhoto: fromUser.profilePhoto,
-              message: `${fromUser.firstName} viewed your profile.`,
-              createdAt: notification.createdAt
-            }
-          });
-          
-          if (sent) {
-            console.log(`Profile view notification sent to user ${userId} from ${fromUser.firstName}`);
-          }
-        }
-      } catch (notificationError) {
-        // Don't fail the request if notification creation fails
-        console.error('Failed to create profile view notification:', notificationError);
+        isNewNotification = true;
       }
       
-      res.json(toPublicUser(user));
-    } catch (error) {
-      res.status(500).json({ message: "Failed to fetch user profile" });
+      // Send real-time notification to viewed user if they're online
+      const fromUser = await storage.getUser(req.user!.id);
+      if (fromUser) {
+        const sent = sendToUser(userId, {
+          type: 'newNotification',
+          notification: {
+            id: notification.id,
+            type: 'profile_view',
+            fromUserId: req.user!.id,
+            fromUserName: fromUser.firstName,
+            fromUserPhoto: fromUser.profilePhoto,
+            message: `${fromUser.firstName} viewed your profile.`,
+            createdAt: notification.createdAt
+          }
+        });
+        
+        // Only increment counter if: new notification OR existing was already read
+        if (isNewNotification || wasRead) {
+          sendToUser(userId, {
+            type: 'notificationCountUpdate',
+            action: 'increment'
+          });
+        }
+        
+        if (sent) {
+          console.log(`✅ Profile view notification sent to user ${userId} from ${fromUser.firstName}`);
+        }
+      }
+    } catch (notificationError) {
+      // Don't fail the request if notification creation fails
+      console.error('Failed to create profile view notification:', notificationError);
     }
-  });
-
+    
+    res.json(toPublicUser(user));
+  } catch (error) {
+    res.status(500).json({ message: "Failed to fetch user profile" });
+  }
+});
   // Get user conversations
   app.get("/api/conversations", async (req: AuthenticatedRequest, res: Response) => {
     if (!req.isAuthenticated()) return res.sendStatus(401);
@@ -274,7 +317,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({
         gender: user.filterGender || "",
         location: user.filterLocation || "",
-        ageMin: user.filterAgeMin || 20,
+        ageMin: user.filterAgeMin || 18,
         ageMax: user.filterAgeMax || 40,
       });
     } catch (error) {
@@ -303,7 +346,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({
         gender: updatedUser.filterGender || "",
         location: updatedUser.filterLocation || "",
-        ageMin: updatedUser.filterAgeMin || 20,
+        ageMin: updatedUser.filterAgeMin || 18,
         ageMax: updatedUser.filterAgeMax || 40,
       });
     } catch (error) {
@@ -330,13 +373,153 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({
         gender: "",
         location: "",
-        ageMin: 20,
+        ageMin: 18,
         ageMax: 40,
       });
     } catch (error) {
       res.status(500).json({ message: "Failed to reset filters" });
     }
   });
+
+// Register or update FCM token for push notifications
+app.post("/api/user/fcm-token", async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.isAuthenticated()) return res.sendStatus(401);
+  
+  try {
+    const { fcmToken } = req.body;
+    
+    if (!fcmToken || typeof fcmToken !== 'string' || fcmToken.trim() === '') {
+      return res.status(400).json({ message: "Valid FCM token is required" });
+    }
+    
+    // Update user's FCM token in database
+    const updatedUser = await storage.updateUser(req.user!.id, {
+      fcmToken: fcmToken.trim(),
+    });
+    
+    if (!updatedUser) {
+      return res.status(404).json({ message: "User not found" });
+    }
+    
+    console.log(`✅ FCM token registered for user ${req.user!.id} (${updatedUser.firstName} ${updatedUser.lastName})`);
+    
+    res.json({ 
+      message: "FCM token registered successfully",
+      success: true 
+    });
+  } catch (error) {
+    console.error('Failed to register FCM token:', error);
+    res.status(500).json({ message: "Failed to register FCM token" });
+  }
+});
+
+// Remove FCM token (for logout)
+app.delete("/api/user/fcm-token", async (req: AuthenticatedRequest, res: Response) => {
+  if (!req.isAuthenticated()) return res.sendStatus(401);
+  
+  try {
+    const updatedUser = await storage.updateUser(req.user!.id, {
+      fcmToken: null,
+    });
+    
+    if (!updatedUser) {
+      return res.status(404).json({ message: "User not found" });
+    }
+    
+    console.log(`🔄 FCM token removed for user ${req.user!.id} (${updatedUser.firstName} ${updatedUser.lastName})`);
+    
+    res.json({ 
+      message: "FCM token removed successfully",
+      success: true 
+    });
+  } catch (error) {
+    console.error('Failed to remove FCM token:', error);
+    res.status(500).json({ message: "Failed to remove FCM token" });
+  }
+});
+
+  // Complete Google OAuth profile (birthdate and gender)
+  app.patch("/api/user/complete-profile", async (req: AuthenticatedRequest, res: Response) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    
+    try {
+      const { birthdate, gender } = req.body;
+      
+      // Validate required fields
+      if (!birthdate || !gender) {
+        return res.status(400).json({ message: "Birthdate and gender are required" });
+      }
+      
+      // Validate birthdate format
+      const birthDate = new Date(birthdate);
+      if (isNaN(birthDate.getTime())) {
+        return res.status(400).json({ message: "Invalid birthdate format" });
+      }
+      
+      // Calculate age from birthdate
+      const today = new Date();
+      let age = today.getFullYear() - birthDate.getFullYear();
+      const monthDiff = today.getMonth() - birthDate.getMonth();
+      
+      if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birthDate.getDate())) {
+        age--;
+      }
+      
+      // Validate age (must be 18+)
+      if (age < 18 || isNaN(age)) {
+        return res.status(400).json({ message: "You must be at least 18 years old" });
+      }
+      
+      // Update user profile
+      const updatedUser = await storage.updateUser(req.user!.id, {
+        age,
+        gender,
+        needsProfileCompletion: false,
+      });
+      
+      if (!updatedUser) {
+        return res.status(404).json({ message: "User not found" });
+      }
+      
+      res.json({ 
+        success: true,
+        user: toPublicUser(updatedUser)
+      });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to complete profile" });
+    }
+  });
+
+  // Register FCM token for push notifications (Android app)
+  app.post("/api/user/fcm-token", async (req: AuthenticatedRequest, res: Response) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    
+    try {
+      const { fcmToken } = req.body;
+      
+      if (!fcmToken || typeof fcmToken !== 'string') {
+        return res.status(400).json({ message: "Valid FCM token is required" });
+      }
+      
+      const updatedUser = await storage.updateUser(req.user!.id, {
+        fcmToken,
+      });
+      
+      if (!updatedUser) {
+        return res.status(404).json({ message: "User not found" });
+      }
+      
+      res.json({ 
+        success: true,
+        message: "FCM token registered successfully"
+      });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to register FCM token" });
+    }
+  });
+
+  // FCM webhook endpoint (called by PostgreSQL trigger)
+  app.post("/api/fcm/notify", handleNotificationWebhook);
 
   // Upload profile picture
   app.post("/api/upload/profile", upload.single('profilePicture'), async (req: AuthenticatedRequest, res: Response) => {
@@ -473,10 +656,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (!req.isAuthenticated()) return res.sendStatus(401);
     
     try {
-      const count = await storage.getUnreadNotificationCount(req.user!.id);
+      // Only count profile view notifications (exclude messages)
+      const count = await storage.getUnreadProfileViewNotificationCount(req.user!.id);
       res.json({ count });
     } catch (error) {
       res.status(500).json({ message: "Failed to fetch unread count" });
+    }
+  });
+
+  app.get("/api/messages/unread-count", async (req: AuthenticatedRequest, res: Response) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    
+    try {
+      const count = await storage.getUnreadMessageNotificationCount(req.user!.id);
+      res.json({ count });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch message unread count" });
     }
   });
 
@@ -512,6 +707,268 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.sendStatus(200);
     } catch (error) {
       res.status(500).json({ message: "Failed to delete notification" });
+    }
+  });
+
+  // Profile Like Routes
+  app.post("/api/likes/:userId", async (req: AuthenticatedRequest, res: Response) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    
+    try {
+      const { userId } = req.params;
+      const likerId = req.user!.id;
+
+      // Prevent liking own profile
+      if (likerId === userId) {
+        return res.status(400).json({ message: "You cannot like your own profile" });
+      }
+
+      // Create the like
+      const like = await storage.likeProfile(likerId, userId);
+
+      // Create or update profile like notification to avoid duplicates
+      const existingNotification = await storage.findExistingNotification(
+        userId,
+        likerId,
+        "profile_like"
+      );
+      
+      let notification;
+      let isNewNotification = false;
+      let wasRead = false;
+      
+      if (existingNotification) {
+        // Store whether the notification was read before updating
+        wasRead = existingNotification.isRead ?? false;
+        // Update timestamp of existing notification instead of creating new one
+        notification = await storage.updateNotificationTimestamp(existingNotification.id);
+      } else {
+        // Create new notification for the liked user
+        notification = await storage.createNotification({
+          userId: userId,
+          type: 'profile_like',
+          fromUserId: likerId,
+        });
+        isNewNotification = true;
+      }
+
+      // Send real-time notification to liked user if they're online
+      const fromUser = await storage.getUser(likerId);
+      if (fromUser) {
+        const sent = sendToUser(userId, {
+          type: 'newNotification',
+          notification: {
+            id: notification.id,
+            type: 'profile_like',
+            fromUserId: likerId,
+            fromUserName: fromUser.firstName,
+            fromUserPhoto: fromUser.profilePhoto,
+            message: `${fromUser.firstName} liked your profile.`,
+            createdAt: notification.createdAt
+          }
+        });
+        
+        // Only increment counter if: new notification OR existing was already read
+        if (isNewNotification || wasRead) {
+          sendToUser(userId, {
+            type: 'notificationCountUpdate',
+            action: 'increment'
+          });
+        }
+        
+        if (sent) {
+          console.log(`Profile like notification sent to user ${userId} from ${fromUser.firstName}`);
+        }
+      }
+
+      res.json(like);
+    } catch (error) {
+      console.error('Error liking profile:', error);
+      res.status(500).json({ message: "Failed to like profile" });
+    }
+  });
+
+  app.delete("/api/likes/:userId", async (req: AuthenticatedRequest, res: Response) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    
+    try {
+      const { userId } = req.params;
+      const likerId = req.user!.id;
+
+      await storage.unlikeProfile(likerId, userId);
+      res.sendStatus(200);
+    } catch (error) {
+      console.error('Error unliking profile:', error);
+      res.status(500).json({ message: "Failed to unlike profile" });
+    }
+  });
+
+  app.get("/api/likes/check/:userId", async (req: AuthenticatedRequest, res: Response) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    
+    try {
+      const { userId } = req.params;
+      const likerId = req.user!.id;
+
+      const isLiked = await storage.checkIfLiked(likerId, userId);
+      res.json({ isLiked });
+    } catch (error) {
+      console.error('Error checking like status:', error);
+      res.status(500).json({ message: "Failed to check like status" });
+    }
+  });
+
+  app.get("/api/likes/received", async (req: AuthenticatedRequest, res: Response) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    
+    try {
+      const userId = req.user!.id;
+      const likes = await storage.getUserLikes(userId);
+      
+      // Return likes with safe public user data
+      const safeLikes = likes.map(like => ({
+        ...like,
+        likerUser: toPublicUser(like.likerUser)
+      }));
+
+      res.json(safeLikes);
+    } catch (error) {
+      console.error('Error fetching likes:', error);
+      res.status(500).json({ message: "Failed to fetch likes" });
+    }
+  });
+
+  app.get("/api/likes/count", async (req: AuthenticatedRequest, res: Response) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    
+    try {
+      const userId = req.user!.id;
+      const count = await storage.getLikesCount(userId);
+      res.json({ count });
+    } catch (error) {
+      console.error('Error fetching likes count:', error);
+      res.status(500).json({ message: "Failed to fetch likes count" });
+    }
+  });
+
+  // Chat consent routes
+  app.get("/api/consent/:userId", async (req: AuthenticatedRequest, res: Response) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    
+    try {
+      const { userId } = req.params;
+      
+      // First check if there's a consent where WE are the RESPONDER (someone sent us a request)
+      // This means: requesterId = userId (the other person), responderId = current user
+      const incomingConsent = await storage.getChatConsent(userId, req.user!.id);
+      
+      if (incomingConsent && 
+          incomingConsent.status === 'pending' && 
+          incomingConsent.requesterId === userId && 
+          incomingConsent.responderId === req.user!.id) {
+        // We are the responder - return with requester info for Accept/Reject UI
+        const requester = await storage.getUser(incomingConsent.requesterId);
+        console.log('[Consent API] Found incoming pending consent - current user is responder', {
+          consentId: incomingConsent.id,
+          requesterId: incomingConsent.requesterId,
+          responderId: incomingConsent.responderId
+        });
+        res.json({ 
+          status: 'pending', 
+          allowed: false,
+          consent: incomingConsent, 
+          requester 
+        });
+        return;
+      }
+      
+      // Otherwise, check general permission (could be requester, accepted, rejected, or no consent)
+      const permission = await storage.checkChatPermission(req.user!.id, userId);
+      console.log('[Consent API] General permission check:', {
+        currentUser: req.user!.id,
+        otherUser: userId,
+        permission
+      });
+      
+      // If we're the requester and status is pending, return that we're waiting
+      if (permission.status === 'pending' && permission.consent && 
+          permission.consent.requesterId === req.user!.id) {
+        res.json({ 
+          status: 'waiting',
+          allowed: false, 
+          consent: permission.consent 
+        });
+        return;
+      }
+      
+      // For no_consent, return null status to allow first message
+      if (permission.status === 'no_consent') {
+        res.json({ status: null, allowed: true });
+        return;
+      }
+      
+      res.json(permission);
+    } catch (error) {
+      console.error('[Consent API] Error:', error);
+      res.status(500).json({ message: "Failed to check consent status" });
+    }
+  });
+
+  app.post("/api/consent/accept", async (req: AuthenticatedRequest, res: Response) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    
+    try {
+      const { consentId, requesterId } = req.body;
+      
+      if (!consentId) {
+        return res.status(400).json({ message: "Consent ID is required" });
+      }
+      
+      const updatedConsent = await storage.updateConsentStatus(consentId, 'accepted');
+      
+      // Notify the requester via WebSocket
+      const requesterConnection = connectedUsers.get(requesterId);
+      if (requesterConnection && requesterConnection.ws.readyState === WebSocket.OPEN) {
+        requesterConnection.ws.send(JSON.stringify({
+          type: 'consentAccepted',
+          responderId: req.user!.id,
+          consent: updatedConsent,
+        }));
+      }
+      
+      res.json({ consent: updatedConsent });
+    } catch (error) {
+      console.error('Accept consent error:', error);
+      res.status(500).json({ message: "Failed to accept consent" });
+    }
+  });
+
+  app.post("/api/consent/reject", async (req: AuthenticatedRequest, res: Response) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+    
+    try {
+      const { consentId, requesterId } = req.body;
+      
+      if (!consentId) {
+        return res.status(400).json({ message: "Consent ID is required" });
+      }
+      
+      const updatedConsent = await storage.updateConsentStatus(consentId, 'rejected');
+      
+      // Notify the requester via WebSocket
+      const requesterConnection = connectedUsers.get(requesterId);
+      if (requesterConnection && requesterConnection.ws.readyState === WebSocket.OPEN) {
+        requesterConnection.ws.send(JSON.stringify({
+          type: 'consentRejected',
+          responderId: req.user!.id,
+          consent: updatedConsent,
+        }));
+      }
+      
+      res.json({ consent: updatedConsent });
+    } catch (error) {
+      console.error('Reject consent error:', error);
+      res.status(500).json({ message: "Failed to reject consent" });
     }
   });
 
@@ -569,6 +1026,142 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (err) return next(err);
       res.sendStatus(200);
     });
+  });
+
+  // Support/Feedback route
+  app.post("/api/support/send", async (req: AuthenticatedRequest, res: Response) => {
+    if (!req.isAuthenticated()) return res.sendStatus(401);
+
+    try {
+      const { firstName, lastName, email, message } = req.body;
+
+      // Validate input
+      if (!firstName || !lastName || !email || !message) {
+        return res.status(400).json({ message: "All fields are required" });
+      }
+
+      // Validate message length
+      if (message.trim().length === 0) {
+        return res.status(400).json({ message: "Message cannot be empty" });
+      }
+
+      if (message.length > 2000) {
+        return res.status(400).json({ message: "Message is too long (max 2000 characters)" });
+      }
+
+      // Sanitize input (basic sanitization)
+      const sanitizedMessage = message.trim();
+      const sanitizedFirstName = firstName.trim();
+      const sanitizedLastName = lastName.trim();
+      const sanitizedEmail = email.trim();
+
+      // Verify the email matches the authenticated user's email
+      if (sanitizedEmail !== req.user!.email) {
+        return res.status(403).json({ message: "Email mismatch" });
+      }
+
+      // Send support email
+      await sendSupportEmail(
+        sanitizedFirstName,
+        sanitizedLastName,
+        sanitizedEmail,
+        sanitizedMessage
+      );
+
+      res.json({ 
+        success: true, 
+        message: "Support message sent successfully" 
+      });
+    } catch (error) {
+      console.error("Support email error:", error);
+      res.status(500).json({ message: "Failed to send support message" });
+    }
+  });
+
+  // Account Deletion: Request deletion code
+  app.post("/api/account/request-delete", async (req: Request, res: Response) => {
+    try {
+      const { email } = req.body;
+
+      if (!email || typeof email !== 'string') {
+        return res.status(400).json({ message: "Email is required" });
+      }
+
+      const sanitizedEmail = email.trim().toLowerCase();
+
+      const user = await storage.getUserByEmail(sanitizedEmail);
+      if (!user) {
+        return res.status(404).json({ message: "No account found with this email address" });
+      }
+
+      await storage.cleanupExpiredDeletionCodes();
+
+      const code = generateVerificationCode();
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+      await storage.createAccountDeletionCode(sanitizedEmail, code, expiresAt);
+
+      await sendAccountDeletionEmail(sanitizedEmail, code, user.firstName);
+
+      res.json({ 
+        success: true, 
+        message: "Verification code sent to your email address" 
+      });
+    } catch (error) {
+      console.error("Account deletion request error:", error);
+      res.status(500).json({ message: "Failed to process deletion request" });
+    }
+  });
+
+  // Account Deletion: Verify code and delete account
+  app.post("/api/account/verify-delete", async (req: Request, res: Response) => {
+    try {
+      const { email, code } = req.body;
+
+      if (!email || typeof email !== 'string' || !code || typeof code !== 'string') {
+        return res.status(400).json({ message: "Email and verification code are required" });
+      }
+
+      const sanitizedEmail = email.trim().toLowerCase();
+      const sanitizedCode = code.trim();
+
+      const isValid = await storage.verifyAccountDeletionCode(sanitizedEmail, sanitizedCode);
+
+      if (!isValid) {
+        return res.status(400).json({ message: "Invalid or expired verification code" });
+      }
+
+      await storage.deleteAllUserData(sanitizedEmail);
+
+      // Send success response FIRST (while session still exists)
+      res.json({ 
+        success: true, 
+        message: "Your account and all associated data have been permanently deleted" 
+      });
+
+      // THEN destroy the session asynchronously to prevent "Failed to deserialize" errors
+      // This happens after the response is sent, so it won't affect the client
+      setImmediate(() => {
+        if (req.session) {
+          req.logout((err) => {
+            if (err) {
+              console.error("Error logging out after account deletion:", err);
+            }
+            
+            if (req.session) {
+              req.session.destroy((err) => {
+                if (err) {
+                  console.error("Error destroying session after account deletion:", err);
+                }
+              });
+            }
+          });
+        }
+      });
+    } catch (error) {
+      console.error("Account deletion verification error:", error);
+      res.status(500).json({ message: "Failed to delete account" });
+    }
   });
 
   wss.on('connection', async (ws: WebSocket, req: Request) => {
@@ -647,6 +1240,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
             activeChatWindows.get(userId)!.add(openUserId);
             console.log(`User ${userId} opened chat window with ${openUserId}`);
+            
+            // Get the conversation to mark messages as read
+            const openConversation = await storage.getConversation(userId, openUserId);
+            if (openConversation) {
+              // Mark all messages in this conversation as read (for the current user)
+              await storage.markMessagesAsReadInConversation(openConversation.id, userId);
+            }
+            
+            // Mark all message notifications from this user as read
+            await storage.markMessageNotificationsAsReadFromUser(userId, openUserId);
+            
+            // Notify the user to update their message counter in real-time
+            sendToUser(userId, {
+              type: 'messageNotificationsRead',
+              fromUserId: openUserId,
+            });
             break;
             
           case 'closeChatWindow':
@@ -666,7 +1275,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
             if (!userId) return;
             
             const { receiverId, content, imageUrl } = message;
+            console.log(`[WebSocket] sendMessage from ${userId} to ${receiverId}, content: "${content}"`);
             
+            // Check chat permission
+            const permission = await storage.checkChatPermission(userId, receiverId);
+            console.log(`[WebSocket] Chat permission check:`, permission);
+            
+            // If consent is rejected, block message
+            if (permission.status === 'rejected') {
+              ws.send(JSON.stringify({
+                type: 'consentRejected',
+                receiverId,
+                message: 'Chat request declined',
+              }));
+              return;
+            }
+            
+            // If consent is pending, block message
+            if (permission.status === 'pending') {
+              ws.send(JSON.stringify({
+                type: 'consentPending',
+                receiverId,
+                message: 'Waiting for consent',
+              }));
+              return;
+            }
+            
+            // At this point, either no_consent (first message) or accepted (approved chat)
             // Get or create conversation
             let conversation = await storage.getConversation(userId, receiverId);
             if (!conversation) {
@@ -676,7 +1311,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
               });
             }
             
-            // Create message
+            // Create and save the message
             const newMessage = await storage.createMessage({
               conversationId: conversation.id,
               senderId: userId,
@@ -684,10 +1319,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
               imageUrl,
             });
             
-            // Send to receiver if online
+            // Send message to receiver if online
             const receiverConnection = connectedUsers.get(receiverId);
+            const senderUser = await storage.getUser(userId);
             if (receiverConnection && receiverConnection.ws.readyState === WebSocket.OPEN) {
-              const senderUser = await storage.getUser(userId);
               receiverConnection.ws.send(JSON.stringify({
                 type: 'newMessage',
                 message: newMessage,
@@ -695,6 +1330,61 @@ export async function registerRoutes(app: Express): Promise<Server> {
               }));
             }
             
+            // Confirm to sender
+            ws.send(JSON.stringify({
+              type: 'messageConfirmed',
+              message: newMessage,
+            }));
+            
+            // If no consent exists (first message), create consent request
+            if (permission.status === 'no_consent') {
+              console.log(`[WebSocket] Creating consent: requester=${userId}, responder=${receiverId}`);
+              console.log(`[WebSocket] Connected users count: ${connectedUsers.size}`);
+              console.log(`[WebSocket] Connected user IDs:`, Array.from(connectedUsers.keys()));
+              
+              const newConsent = await storage.createChatConsent({
+                requesterId: userId,
+                responderId: receiverId,
+              });
+              console.log(`[WebSocket] Consent created:`, newConsent);
+              
+              // Re-fetch receiver connection to ensure we have the latest state
+              const freshReceiverConnection = connectedUsers.get(receiverId);
+              console.log(`[WebSocket] Receiver ${receiverId} connection status:`, {
+                exists: !!freshReceiverConnection,
+                wsState: freshReceiverConnection?.ws.readyState,
+                senderUserExists: !!senderUser,
+              });
+              
+              // Send consent request to receiver
+              if (freshReceiverConnection && freshReceiverConnection.ws.readyState === WebSocket.OPEN && senderUser) {
+                console.log(`[WebSocket] ✅ Sending consentRequest to receiver ${receiverId}`);
+                freshReceiverConnection.ws.send(JSON.stringify({
+                  type: 'consentRequest',
+                  consent: newConsent,
+                  requester: toPublicUser(senderUser),
+                  firstMessage: newMessage,
+                }));
+                console.log(`[WebSocket] ✅ consentRequest sent successfully to ${receiverId}`);
+              } else {
+                console.log(`[WebSocket] ❌ Cannot send to receiver ${receiverId}:`, {
+                  receiverConnected: !!freshReceiverConnection,
+                  wsReady: freshReceiverConnection?.ws.readyState === WebSocket.OPEN,
+                  senderUserExists: !!senderUser,
+                });
+              }
+              
+              // Send pending status to sender (disable input)
+              console.log(`[WebSocket] Sending consentPending to sender ${userId}`);
+              ws.send(JSON.stringify({
+                type: 'consentPending',
+                receiverId,
+                message: 'Waiting for consent',
+              }));
+              return;
+            }
+            
+            // If we get here, consent is accepted - handle notifications
             // Check if both users have the chat window open (actively chatting)
             const senderHasChatOpen = activeChatWindows.has(userId) && activeChatWindows.get(userId)!.has(receiverId);
             const receiverHasChatOpen = activeChatWindows.has(receiverId) && activeChatWindows.get(receiverId)!.has(userId);
@@ -703,15 +1393,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
             // Only create notification if they're NOT both actively chatting
             if (!bothActivelyChatting) {
               try {
-                const notification = await storage.createNotification({
-                  userId: receiverId,
-                  type: "message_received",
-                  fromUserId: userId,
-                  conversationId: conversation.id,
-                });
+                // Check if notification already exists from this user in this conversation
+                const existingNotification = await storage.findExistingNotification(
+                  receiverId,
+                  userId,
+                  "message_received",
+                  conversation.id
+                );
+                
+                let notification;
+                if (existingNotification) {
+                  // Update timestamp and mark as unread if it was read
+                  notification = await storage.updateNotificationTimestamp(existingNotification.id);
+                } else {
+                  // Create new notification
+                  notification = await storage.createNotification({
+                    userId: receiverId,
+                    type: "message_received",
+                    fromUserId: userId,
+                    conversationId: conversation.id,
+                  });
+                }
                 
                 // Send real-time notification to receiver if they're online
-                const senderUser = await storage.getUser(userId);
                 if (senderUser && receiverConnection && receiverConnection.ws.readyState === WebSocket.OPEN) {
                   receiverConnection.ws.send(JSON.stringify({
                     type: 'newNotification',
@@ -725,17 +1429,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
                       createdAt: notification.createdAt
                     }
                   }));
+                  
+                  // Also send a dedicated event for message counter update
+                  receiverConnection.ws.send(JSON.stringify({
+                    type: 'messageCountUpdate',
+                    action: 'increment'
+                  }));
                 }
               } catch (notificationError) {
                 console.error('Failed to create message notification:', notificationError);
               }
             }
-            
-            // Confirm to sender
-            ws.send(JSON.stringify({
-              type: 'messageConfirmed',
-              message: newMessage,
-            }));
             break;
             
           case 'typing':
@@ -775,6 +1479,173 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
     });
+  });
+
+  // Subscribe to newsletter
+  app.post("/api/subscribe", async (req: Request, res: Response) => {
+    try {
+      const result = insertSubscriberSchema.safeParse(req.body);
+      
+      if (!result.success) {
+        return res.status(400).json({ 
+          message: result.error.errors[0]?.message || "Invalid email address" 
+        });
+      }
+
+      const { email } = result.data;
+
+      // Check if email already exists
+      const existingSubscriber = await storage.getSubscriberByEmail(email);
+      if (existingSubscriber) {
+        return res.status(400).json({ 
+          message: "You're already subscribed to our newsletter!" 
+        });
+      }
+
+      // Add subscriber
+      const subscriber = await storage.addSubscriber(email);
+      
+      // Send welcome email with unsubscribe link
+      try {
+        await sendSubscribeEmail(email, subscriber.unsubscribeToken);
+      } catch (emailError) {
+        console.error('Failed to send subscribe email:', emailError);
+      }
+      
+      res.status(201).json({ 
+        message: "Successfully subscribed! Check your email for a welcome message." 
+      });
+    } catch (error: any) {
+      console.error('Error subscribing:', error);
+      
+      // Check if it's a unique constraint violation
+      if (error.code === '23505') {
+        return res.status(400).json({ 
+          message: "You're already subscribed to our newsletter!" 
+        });
+      }
+      
+      res.status(500).json({ 
+        message: "Failed to subscribe. Please try again later." 
+      });
+    }
+  });
+
+  // Unsubscribe from newsletter
+  app.get("/api/unsubscribe", async (req: Request, res: Response) => {
+    try {
+      const token = req.query.token as string;
+      
+      if (!token) {
+        return res.status(400).send(`
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Invalid Link - SpreadLov</title>
+            <style>
+              body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); margin: 0; padding: 20px; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+              .container { background: white; border-radius: 16px; padding: 40px; max-width: 500px; text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
+              h1 { color: #dc2626; margin: 0 0 16px 0; }
+              p { color: #4b5563; line-height: 1.6; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <h1>Invalid Unsubscribe Link</h1>
+              <p>This unsubscribe link is invalid or has expired.</p>
+            </div>
+          </body>
+          </html>
+        `);
+      }
+
+      // Check if subscriber exists
+      const subscriber = await storage.getSubscriberByToken(token);
+      if (!subscriber) {
+        return res.status(404).send(`
+          <!DOCTYPE html>
+          <html>
+          <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Already Unsubscribed - SpreadLov</title>
+            <style>
+              body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); margin: 0; padding: 20px; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+              .container { background: white; border-radius: 16px; padding: 40px; max-width: 500px; text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
+              h1 { color: #1f2937; margin: 0 0 16px 0; }
+              p { color: #4b5563; line-height: 1.6; }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <h1>Already Unsubscribed</h1>
+              <p>This email address has already been unsubscribed from our newsletter.</p>
+            </div>
+          </body>
+          </html>
+        `);
+      }
+
+      // Delete subscriber
+      await storage.deleteSubscriber(token);
+      
+      res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Unsubscribed Successfully - SpreadLov</title>
+          <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); margin: 0; padding: 20px; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+            .container { background: white; border-radius: 16px; padding: 40px; max-width: 500px; text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
+            .icon { font-size: 64px; margin-bottom: 20px; }
+            h1 { color: #1f2937; margin: 0 0 16px 0; }
+            p { color: #4b5563; line-height: 1.6; margin-bottom: 24px; }
+            .email { font-weight: 600; color: #667eea; }
+            a { display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-weight: 600; margin-top: 20px; }
+            a:hover { opacity: 0.9; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <div class="icon">✓</div>
+            <h1>Successfully Unsubscribed</h1>
+            <p>You've been unsubscribed from the SpreadLov newsletter.</p>
+            <p class="email">${subscriber.email}</p>
+            <p style="font-size: 14px; color: #6b7280;">We're sorry to see you go. You can always resubscribe anytime!</p>
+            <a href="https://spreadlov.com">Return to SpreadLov</a>
+          </div>
+        </body>
+        </html>
+      `);
+    } catch (error: any) {
+      console.error('Error unsubscribing:', error);
+      res.status(500).send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Error - SpreadLov</title>
+          <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); margin: 0; padding: 20px; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+            .container { background: white; border-radius: 16px; padding: 40px; max-width: 500px; text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,0.3); }
+            h1 { color: #dc2626; margin: 0 0 16px 0; }
+            p { color: #4b5563; line-height: 1.6; }
+          </style>
+        </head>
+        <body>
+          <div class="container">
+            <h1>Error</h1>
+            <p>An error occurred while processing your request. Please try again later.</p>
+          </div>
+        </body>
+        </html>
+      `);
+    }
   });
 
   return httpServer;

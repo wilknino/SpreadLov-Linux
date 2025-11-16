@@ -7,7 +7,7 @@ const NOTIFICATION_AUTO_DISMISS = 5000 // 5 seconds
 
 type NotificationToast = {
   id: string
-  type: "profile_view" | "message_received"
+  type: "profile_view" | "message_received" | "profile_like"
   fromUserName: string
   fromUserPhoto?: string
   fromUserId?: string
@@ -249,6 +249,23 @@ export function showMessageNotification(
     notificationId,
     title: "New message",
     description: `${fromUserName} sent you a message.`,
+  })
+}
+
+export function showProfileLikeNotification(
+  fromUserName: string, 
+  fromUserPhoto?: string, 
+  fromUserId?: string, 
+  notificationId?: string
+) {
+  return showNotification({
+    type: "profile_like",
+    fromUserName,
+    fromUserPhoto,
+    fromUserId,
+    notificationId,
+    title: "Profile like",
+    description: `${fromUserName} liked your profile.`,
   })
 }
 

@@ -1,7 +1,7 @@
 import * as React from "react"
 import * as ToastPrimitives from "@radix-ui/react-toast"
 import { cva, type VariantProps } from "class-variance-authority"
-import { X, User, MessageCircle } from "lucide-react"
+import { X, User, MessageCircle, Heart } from "lucide-react"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { cn } from "@/lib/utils"
 
@@ -23,13 +23,14 @@ const NotificationViewport = React.forwardRef<
 NotificationViewport.displayName = "NotificationViewport"
 
 const notificationVariants = cva(
-  "group pointer-events-auto relative flex w-full items-center space-x-3 overflow-hidden rounded-xl border p-4 shadow-2xl backdrop-blur-md transition-all cursor-pointer hover:scale-[1.02] active:scale-[0.98] data-[swipe=cancel]:translate-x-0 data-[swipe=end]:translate-x-[var(--radix-toast-swipe-end-x)] data-[swipe=move]:translate-x-[var(--radix-toast-swipe-move-x)] data-[swipe=move]:transition-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[swipe=end]:animate-out data-[state=closed]:fade-out-80 data-[state=closed]:slide-out-to-top-full data-[state=open]:slide-in-from-top-full data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95",
+  "group pointer-events-auto relative flex w-full items-center space-x-4 overflow-hidden rounded-2xl border-2 p-5 shadow-2xl backdrop-blur-xl transition-all duration-300 cursor-pointer hover:scale-[1.03] hover:shadow-3xl active:scale-[0.97] data-[swipe=cancel]:translate-x-0 data-[swipe=end]:translate-x-[var(--radix-toast-swipe-end-x)] data-[swipe=move]:translate-x-[var(--radix-toast-swipe-move-x)] data-[swipe=move]:transition-none data-[state=open]:animate-in data-[state=closed]:animate-out data-[swipe=end]:animate-out data-[state=closed]:fade-out-80 data-[state=closed]:slide-out-to-top-full data-[state=open]:slide-in-from-top-full data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95",
   {
     variants: {
       variant: {
         default: "border-border bg-background/95 text-foreground",
-        profile_view: "border-blue-500/40 bg-card/95 text-blue-300 backdrop-blur-md",
-        message_received: "border-green-500/40 bg-card/95 text-green-300 backdrop-blur-md",
+        profile_view: "border-blue-400/50 bg-gradient-to-r from-blue-950/90 to-blue-900/80 backdrop-blur-xl shadow-blue-500/20",
+        message_received: "border-green-400/50 bg-gradient-to-r from-green-950/90 to-green-900/80 backdrop-blur-xl shadow-green-500/20",
+        profile_like: "border-red-400/50 bg-gradient-to-r from-red-950/90 to-red-900/80 backdrop-blur-xl shadow-red-500/20",
       },
     },
     defaultVariants: {
@@ -88,17 +89,29 @@ NotificationClose.displayName = "NotificationClose"
 const NotificationIcon = React.forwardRef<
   HTMLDivElement,
   React.HTMLAttributes<HTMLDivElement> & {
-    type: "profile_view" | "message_received"
+    type: "profile_view" | "message_received" | "profile_like"
     fromUserPhoto?: string
     fromUserName: string
   }
 >(({ className, type, fromUserPhoto, fromUserName, ...props }, ref) => {
-  const IconComponent = type === "profile_view" ? User : MessageCircle
+  const IconComponent = type === "profile_view" ? User : type === "message_received" ? MessageCircle : Heart
   
   // Generate initials from name for fallback
   const initials = fromUserName.split(' ').map(n => n[0]).join('').toUpperCase()
   
   console.log('NotificationIcon render:', { type, fromUserName, fromUserPhoto, initials });
+  
+  const getBgColor = () => {
+    if (type === "profile_view") return "bg-gradient-to-br from-blue-500 to-blue-600"
+    if (type === "message_received") return "bg-gradient-to-br from-green-500 to-green-600"
+    return "bg-gradient-to-br from-red-500 to-red-600"
+  }
+  
+  const getBorderColor = () => {
+    if (type === "profile_view") return "border-blue-300 shadow-lg shadow-blue-500/30"
+    if (type === "message_received") return "border-green-300 shadow-lg shadow-green-500/30"
+    return "border-red-300 shadow-lg shadow-red-500/30"
+  }
   
   return (
     <div
@@ -111,9 +124,7 @@ const NotificationIcon = React.forwardRef<
           <AvatarImage src={fromUserPhoto} alt={fromUserName} />
           <AvatarFallback className={cn(
             "text-white font-semibold",
-            type === "profile_view" 
-              ? "bg-blue-500" 
-              : "bg-green-500"
+            getBgColor()
           )}>
             {initials}
           </AvatarFallback>
@@ -122,9 +133,8 @@ const NotificationIcon = React.forwardRef<
         <div
           className={cn(
             "flex h-10 w-10 items-center justify-center rounded-full",
-            type === "profile_view" 
-              ? "bg-blue-500 border-2 border-blue-400" 
-              : "bg-green-500 border-2 border-green-400"
+            getBgColor(),
+            `border-2 ${getBorderColor()}`
           )}
         >
           <IconComponent 
@@ -155,7 +165,7 @@ const NotificationTitle = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <p
     ref={ref}
-    className={cn("text-sm font-semibold leading-none text-foreground", className)}
+    className={cn("text-base font-bold leading-none text-white tracking-wide", className)}
     {...props}
   />
 ))
@@ -167,7 +177,7 @@ const NotificationDescription = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <p
     ref={ref}
-    className={cn("text-sm text-muted-foreground/80", className)}
+    className={cn("text-sm text-gray-200/90 mt-1.5", className)}
     {...props}
   />
 ))
